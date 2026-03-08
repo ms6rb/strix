@@ -2,69 +2,27 @@
 
 > **For Claude:** REQUIRED SUB-SKILL: Use superpowers:executing-plans to implement this plan task-by-task.
 
-**Goal:** Make strix-mcp user-friendly and upstream-ready: rename tools to match original strix, remove deprecated paths, improve descriptions/docs, add coverage map.
+**Goal:** Make strix-mcp user-friendly and upstream-ready: remove deprecated paths, improve descriptions/docs, add coverage map, fix dependency metadata.
 
-**Architecture:** Pure docs + naming changes — no structural refactors. Touches tools.py (rename + descriptions), methodology.md (references), tests, and READMEs.
+**Architecture:** Pure docs + cleanup changes — no structural refactors. Touches tools.py (descriptions + removal), server.py (resource descriptions), methodology.md (references), pyproject.toml (metadata), and READMEs.
 
 **Tech Stack:** Python (FastMCP), Markdown
 
----
-
-### Task 1: Rename `end_scan` → `finish_scan`
-
-**Files:**
-- Modify: `strix-mcp/src/strix_mcp/tools.py:323-371`
-
-**Step 1: Rename the function and update docstring**
-
-In `tools.py`, rename the `end_scan` function to `finish_scan`:
-
-```python
-    @mcp.tool()
-    async def finish_scan() -> str:
-        """End the active scan and tear down the Docker sandbox.
-        Returns a comprehensive summary: unique findings deduplicated,
-        grouped by OWASP Top 10 category, with severity breakdown."""
-```
-
-**Step 2: Update methodology.md reference**
-
-In `methodology.md` line 133, change:
-```
-- Call `end_scan` to tear down the sandbox and get a summary
-```
-to:
-```
-- Call `finish_scan` to tear down the sandbox and get a summary
-```
-
-**Step 3: Update test_integration.py reference**
-
-In `tests/test_integration.py` line 16, change `end_scan` to `finish_scan`.
-
-**Step 4: Run tests**
-
-Run: `cd strix-mcp && python -m pytest tests/ -v --tb=short -o "addopts=" --ignore=tests/test_integration.py`
-Expected: All pass
-
-**Step 5: Commit**
-
-```bash
-git add strix-mcp/src/strix_mcp/tools.py strix-mcp/src/strix_mcp/methodology.md strix-mcp/tests/test_integration.py
-git commit -m "refactor(mcp): rename end_scan to finish_scan to match upstream"
-```
+**Decision log:**
+- `end_scan` keeps its name — the original strix `finish_scan` is a different tool (agent submits executive summary). Renaming would create a collision.
+- `register_agent` removed as public tool — `dispatch_agent` handles registration internally.
 
 ---
 
-### Task 2: Remove `register_agent` as public tool
+### Task 1: Remove `register_agent` as public tool
 
 **Files:**
 - Modify: `strix-mcp/src/strix_mcp/tools.py:373-386`
 - Modify: `strix-mcp/src/strix_mcp/methodology.md:77`
 
-**Step 1: Remove the @mcp.tool() decorator from register_agent**
+**Step 1: Remove the register_agent tool function**
 
-Remove the entire `register_agent` tool function (lines 373-386). The `dispatch_agent` tool already calls `sandbox.register_agent()` internally, so the public tool is redundant.
+Delete the entire `register_agent` tool (lines 373-386 in tools.py). The `dispatch_agent` tool already calls `sandbox.register_agent()` internally.
 
 **Step 2: Update methodology.md**
 
@@ -92,30 +50,16 @@ git commit -m "refactor(mcp): remove register_agent public tool, dispatch_agent 
 
 ---
 
-### Task 3: Update proxied tool descriptions to mirror original strix
+### Task 2: Update proxied tool descriptions
 
 **Files:**
-- Modify: `strix-mcp/src/strix_mcp/tools.py` (proxied tools section, lines 624-926)
+- Modify: `strix-mcp/src/strix_mcp/tools.py` (proxied tools section)
 
-The original strix tools have no docstrings, so we write clear descriptions that match the original parameter signatures. Key changes:
+Update docstrings for all 14 proxied tools. Match original strix parameter names and types, add explicit enum values inline. Each step below is one tool's docstring replacement.
 
-**Step 1: Update `browser_action` description**
+**Step 1: `browser_action`**
 
 ```python
-    @mcp.tool()
-    async def browser_action(
-        action: str,
-        url: str | None = None,
-        coordinate: str | None = None,
-        text: str | None = None,
-        js_code: str | None = None,
-        tab_id: str | None = None,
-        duration: str | None = None,
-        key: str | None = None,
-        file_path: str | None = None,
-        clear: bool = False,
-        agent_id: str | None = None,
-    ) -> Sequence[types.TextContent | types.ImageContent]:
         """Control a Playwright browser in the sandbox. Returns a screenshot after each action.
 
         action: launch | goto | click | type | double_click | hover | scroll_up | scroll_down |
@@ -134,18 +78,9 @@ The original strix tools have no docstrings, so we write clear descriptions that
         Start with 'launch', end with 'close'."""
 ```
 
-**Step 2: Update `terminal_execute` description**
+**Step 2: `terminal_execute`**
 
 ```python
-    @mcp.tool()
-    async def terminal_execute(
-        command: str,
-        timeout: int = 30,
-        terminal_id: str = "default",
-        is_input: bool = False,
-        no_enter: bool = False,
-        agent_id: str | None = None,
-    ) -> str:
         """Execute a shell command in a persistent Kali Linux terminal session.
 
         command: the shell command to execute
@@ -155,17 +90,9 @@ The original strix tools have no docstrings, so we write clear descriptions that
         no_enter: if true, send the command without pressing Enter"""
 ```
 
-**Step 3: Update `python_action` description**
+**Step 3: `python_action`**
 
 ```python
-    @mcp.tool()
-    async def python_action(
-        action: str,
-        code: str | None = None,
-        timeout: int = 30,
-        session_id: str | None = None,
-        agent_id: str | None = None,
-    ) -> str:
         """Run Python code in a persistent interpreter session inside the sandbox.
 
         action: new_session | execute | close | list_sessions
@@ -178,97 +105,9 @@ The original strix tools have no docstrings, so we write clear descriptions that
         Must call 'new_session' before using 'execute'."""
 ```
 
-**Step 4: Update `scope_rules` description**
+**Step 4: `send_request`**
 
 ```python
-    @mcp.tool()
-    async def scope_rules(
-        action: str,
-        allowlist: list[str] | None = None,
-        denylist: list[str] | None = None,
-        scope_id: str | None = None,
-        scope_name: str | None = None,
-        agent_id: str | None = None,
-    ) -> str:
-        """Manage proxy scope rules for domain filtering.
-
-        action: get | list | create | update | delete
-        allowlist: domain patterns to include (e.g. ["*.example.com"])
-        denylist: domain patterns to exclude
-        scope_id: scope identifier (required for get/update/delete)
-        scope_name: human-readable scope name (for create/update)"""
-```
-
-**Step 5: Update `list_requests` description**
-
-```python
-    @mcp.tool()
-    async def list_requests(
-        httpql_filter: str | None = None,
-        start_page: int = 1,
-        end_page: int | None = None,
-        page_size: int = 20,
-        sort_by: str = "timestamp",
-        sort_order: str = "desc",
-        scope_id: str | None = None,
-        agent_id: str | None = None,
-    ) -> str:
-        """List captured proxy requests with optional HTTPQL filtering.
-
-        httpql_filter: HTTPQL query (e.g. 'req.method.eq:"POST"', 'resp.code.gte:400',
-                       'req.path.regex:"/api/.*"', 'req.host.regex:".*example.com"')
-        sort_by: timestamp | host | method | path | status_code | response_time | response_size | source
-        sort_order: asc | desc"""
-```
-
-**Step 6: Update `view_request` description**
-
-```python
-    @mcp.tool()
-    async def view_request(
-        request_id: str,
-        part: str | None = None,
-        search_pattern: str | None = None,
-        page: int | None = None,
-        agent_id: str | None = None,
-    ) -> str:
-        """View detailed request or response data from captured proxy traffic.
-
-        request_id: the request ID from list_requests
-        part: request | response (default: request)
-        search_pattern: regex pattern to highlight matches in the content
-        page: page number for paginated responses"""
-```
-
-**Step 7: Update `repeat_request` description**
-
-```python
-    @mcp.tool()
-    async def repeat_request(
-        request_id: str,
-        modifications: dict[str, Any] | None = None,
-        agent_id: str | None = None,
-    ) -> str:
-        """Replay a captured proxy request with optional modifications.
-
-        request_id: the request ID from list_requests
-        modifications: dict with optional keys: url (str), params (dict), headers (dict), body (str), cookies (dict)
-
-        Typical workflow: browse with browser_action → list_requests → repeat_request with modifications."""
-```
-
-**Step 8: Update `send_request` description**
-
-```python
-    @mcp.tool()
-    async def send_request(
-        method: str,
-        url: str,
-        headers: dict[str, str] | None = None,
-        body: str | None = None,
-        timeout: int = 30,
-        agent_id: str | None = None,
-    ) -> str:
         """Send an HTTP request through the Caido proxy. All traffic is captured for analysis with list_requests and view_request.
 
         method: HTTP method (GET, POST, PUT, DELETE, PATCH, etc.)
@@ -278,17 +117,54 @@ The original strix tools have no docstrings, so we write clear descriptions that
         timeout: max seconds to wait for response (default 30)"""
 ```
 
-**Step 9: Update `list_sitemap` description**
+**Step 5: `repeat_request`**
 
 ```python
-    @mcp.tool()
-    async def list_sitemap(
-        scope_id: str | None = None,
-        parent_id: str | None = None,
-        depth: str = "DIRECT",
-        page: int = 1,
-        agent_id: str | None = None,
-    ) -> str:
+        """Replay a captured proxy request with optional modifications.
+
+        request_id: the request ID from list_requests
+        modifications: dict with optional keys — url (str), params (dict), headers (dict), body (str), cookies (dict)
+
+        Typical workflow: browse with browser_action -> list_requests -> repeat_request with modifications."""
+```
+
+**Step 6: `list_requests`**
+
+```python
+        """List captured proxy requests with optional HTTPQL filtering.
+
+        httpql_filter: HTTPQL query (e.g. 'req.method.eq:"POST"', 'resp.code.gte:400',
+                       'req.path.regex:"/api/.*"', 'req.host.regex:".*example.com"')
+        sort_by: timestamp | host | method | path | status_code | response_time | response_size | source
+        sort_order: asc | desc"""
+```
+
+**Step 7: `view_request`**
+
+```python
+        """View detailed request or response data from captured proxy traffic.
+
+        request_id: the request ID from list_requests
+        part: request | response (default: request)
+        search_pattern: regex pattern to highlight matches in the content
+        page: page number for paginated responses"""
+```
+
+**Step 8: `scope_rules`**
+
+```python
+        """Manage proxy scope rules for domain filtering.
+
+        action: get | list | create | update | delete
+        allowlist: domain patterns to include (e.g. ["*.example.com"])
+        denylist: domain patterns to exclude
+        scope_id: scope identifier (required for get/update/delete)
+        scope_name: human-readable scope name (for create/update)"""
+```
+
+**Step 9: `list_sitemap`**
+
+```python
         """View the hierarchical sitemap of discovered attack surface from proxy traffic.
 
         scope_id: filter by scope
@@ -297,62 +173,65 @@ The original strix tools have no docstrings, so we write clear descriptions that
         page: page number for pagination"""
 ```
 
-**Step 10: Update remaining simple tools**
+**Step 10: `view_sitemap_entry`**
 
 ```python
-    # list_files
-        """List files and directories in the sandbox workspace.
-
-        directory_path: path to list (default "/workspace")
-        depth: max recursion depth (default 3)"""
-
-    # search_files
-        """Search file contents in the sandbox workspace.
-
-        directory_path: directory to search in
-        file_pattern: glob pattern for file names (e.g. "*.py", "*.js")
-        search_pattern: regex pattern to match in file contents"""
-
-    # str_replace_editor
-        """Edit a file in the sandbox by replacing an exact text match.
-
-        file_path: path to the file in the sandbox
-        old_str: exact string to find and replace
-        new_str: replacement string"""
-
-    # view_sitemap_entry
         """Get detailed information about a specific sitemap entry and its related HTTP requests.
 
         entry_id: the sitemap entry ID from list_sitemap"""
 ```
 
-**Step 11: Run tests**
+**Step 11: `list_files`**
+
+```python
+        """List files and directories in the sandbox workspace.
+
+        directory_path: path to list (default "/workspace")
+        depth: max recursion depth (default 3)"""
+```
+
+**Step 12: `search_files`**
+
+```python
+        """Search file contents in the sandbox workspace.
+
+        directory_path: directory to search in
+        file_pattern: glob pattern for file names (e.g. "*.py", "*.js")
+        search_pattern: regex pattern to match in file contents"""
+```
+
+**Step 13: `str_replace_editor`**
+
+```python
+        """Edit a file in the sandbox by replacing an exact text match.
+
+        file_path: path to the file in the sandbox
+        old_str: exact string to find and replace
+        new_str: replacement string"""
+```
+
+**Step 14: Run tests**
 
 Run: `cd strix-mcp && python -m pytest tests/ -v --tb=short -o "addopts=" --ignore=tests/test_integration.py`
 Expected: All pass (docstring changes don't break tests)
 
-**Step 12: Commit**
+**Step 15: Commit**
 
 ```bash
 git add strix-mcp/src/strix_mcp/tools.py
-git commit -m "docs(mcp): improve tool descriptions with parameter docs and enum values"
+git commit -m "docs(mcp): improve proxied tool descriptions with parameter docs and enum values"
 ```
 
 ---
 
-### Task 4: Update MCP-only tool descriptions
+### Task 3: Update MCP-only tool descriptions
 
 **Files:**
-- Modify: `strix-mcp/src/strix_mcp/tools.py` (MCP-only tools section)
+- Modify: `strix-mcp/src/strix_mcp/tools.py` (MCP-only tools)
 
-**Step 1: Update `start_scan` description**
+**Step 1: `start_scan`**
 
 ```python
-    @mcp.tool()
-    async def start_scan(
-        targets: list[dict[str, str]],
-        scan_id: str | None = None,
-    ) -> str:
         """Boot a Docker sandbox and initialize a security scan.
 
         targets: list of dicts with keys:
@@ -370,11 +249,9 @@ git commit -m "docs(mcp): improve tool descriptions with parameter docs and enum
         If a Swagger/OpenAPI spec is found, returns openapi_spec with endpoint list."""
 ```
 
-**Step 2: Update `finish_scan` description (already renamed in Task 1)**
+**Step 2: `end_scan`**
 
 ```python
-    @mcp.tool()
-    async def finish_scan() -> str:
         """Tear down the Docker sandbox and return a scan summary.
 
         Deduplicates findings by normalized title (higher severity wins on merge),
@@ -384,28 +261,18 @@ git commit -m "docs(mcp): improve tool descriptions with parameter docs and enum
         Returns: unique_findings count, severity_counts, findings_by_category."""
 ```
 
-**Step 3: Update `get_scan_status` description**
+**Step 3: `get_scan_status`**
 
 ```python
-    @mcp.tool()
-    async def get_scan_status() -> str:
         """Get current scan progress: elapsed time, registered agents, vulnerability
         counts by severity, and pending chain opportunities.
 
         Returns: scan_id, status, elapsed_seconds, agents list, severity_counts, pending_chains count."""
 ```
 
-**Step 4: Update `create_vulnerability_report` description**
+**Step 4: `create_vulnerability_report`**
 
 ```python
-    @mcp.tool()
-    async def create_vulnerability_report(
-        title: str,
-        content: str,
-        severity: str,
-        affected_endpoint: str | None = None,
-        cvss_score: float | None = None,
-    ) -> str:
         """File a confirmed vulnerability finding. Automatically deduplicates — if a
         similar finding exists, evidence is merged and the higher severity is kept.
         Also triggers automatic chain detection across all findings.
@@ -419,11 +286,9 @@ git commit -m "docs(mcp): improve tool descriptions with parameter docs and enum
         Only report validated vulnerabilities with proof of exploitation."""
 ```
 
-**Step 5: Update `list_vulnerability_reports` description**
+**Step 5: `list_vulnerability_reports`**
 
 ```python
-    @mcp.tool()
-    async def list_vulnerability_reports(severity: str | None = None) -> str:
         """List all vulnerability reports filed in the current scan (summaries only).
         Check this before filing a new report to avoid duplicates.
 
@@ -432,11 +297,9 @@ git commit -m "docs(mcp): improve tool descriptions with parameter docs and enum
         Returns: list of {id, title, severity, affected_endpoints, cvss_score}."""
 ```
 
-**Step 6: Update `get_finding` description**
+**Step 6: `get_finding`**
 
 ```python
-    @mcp.tool()
-    async def get_finding(finding_id: str) -> str:
         """Read the full markdown details of a specific vulnerability finding from disk.
 
         finding_id: the report ID (e.g. "vuln-a1b2c3d4") from list_vulnerability_reports.
@@ -444,16 +307,9 @@ git commit -m "docs(mcp): improve tool descriptions with parameter docs and enum
         Returns the raw markdown content from strix_runs/<scan_id>/vulnerabilities/<id>.md."""
 ```
 
-**Step 7: Update `dispatch_agent` description**
+**Step 7: `dispatch_agent`**
 
 ```python
-    @mcp.tool()
-    async def dispatch_agent(
-        task: str,
-        modules: list[str],
-        is_web_only: bool = False,
-        chain_context: dict[str, str] | None = None,
-    ) -> str:
         """Register a new subagent and return a ready-to-use prompt for the Agent tool.
         Handles agent registration internally — pass the returned prompt directly to
         the Agent tool to dispatch.
@@ -466,11 +322,9 @@ git commit -m "docs(mcp): improve tool descriptions with parameter docs and enum
         Returns: agent_id, prompt (pass prompt to Agent tool)."""
 ```
 
-**Step 8: Update `suggest_chains` description**
+**Step 8: `suggest_chains`**
 
 ```python
-    @mcp.tool()
-    async def suggest_chains() -> str:
         """Review all vulnerability chaining opportunities detected so far.
         Call after Phase 1 completes to find attack chains across findings.
 
@@ -480,10 +334,9 @@ git commit -m "docs(mcp): improve tool descriptions with parameter docs and enum
         Returns: total_chains, new_chains count, chains list with dispatch payloads."""
 ```
 
-**Step 9: Update `get_module` and `list_modules` descriptions**
+**Step 9: `get_module`**
 
 ```python
-    # get_module
         """Load a security knowledge module by name. Modules contain exploitation
         techniques, bypass methods, validation requirements, and remediation guidance
         for a specific vulnerability class or technology.
@@ -491,21 +344,24 @@ git commit -m "docs(mcp): improve tool descriptions with parameter docs and enum
         name: module name (e.g. "idor", "sql_injection", "authentication_jwt", "nextjs", "graphql")
 
         Load relevant modules at the START of testing work before analyzing code or running tests."""
+```
 
-    # list_modules
+**Step 10: `list_modules`**
+
+```python
         """List all available security knowledge modules with categories and descriptions.
 
         category: optional filter (e.g. "vulnerabilities", "frameworks", "technologies", "protocols")
 
-        Returns: JSON mapping module_name → {category, description}."""
+        Returns: JSON mapping module_name -> {category, description}."""
 ```
 
-**Step 10: Run tests**
+**Step 11: Run tests**
 
 Run: `cd strix-mcp && python -m pytest tests/ -v --tb=short -o "addopts=" --ignore=tests/test_integration.py`
 Expected: All pass
 
-**Step 11: Commit**
+**Step 12: Commit**
 
 ```bash
 git add strix-mcp/src/strix_mcp/tools.py
@@ -514,7 +370,81 @@ git commit -m "docs(mcp): improve MCP-only tool descriptions with parameter deta
 
 ---
 
-### Task 5: Rewrite strix-mcp/README.md
+### Task 4: Update server.py resource descriptions
+
+**Files:**
+- Modify: `strix-mcp/src/strix_mcp/server.py:24-45`
+
+**Step 1: Update resource docstrings**
+
+```python
+@mcp.resource("strix://methodology")
+def methodology_resource() -> str:
+    """Penetration testing methodology and orchestration playbook.
+    Covers scan workflow, subagent dispatch, vulnerability chaining,
+    severity guidelines, and sandbox environment details.
+    Read this before starting a security scan."""
+    return get_methodology()
+
+
+@mcp.resource("strix://modules")
+def modules_list_resource() -> str:
+    """JSON list of all available security knowledge modules with categories
+    and descriptions. Use this to discover modules before loading them with get_module."""
+    return list_modules()
+
+
+@mcp.resource("strix://modules/{name}")
+def module_resource(name: str) -> str:
+    """Load a specific security knowledge module by name. Each module provides
+    exploitation techniques, bypass methods, and validation requirements for
+    a vulnerability class (e.g. sql_injection, xss, idor) or technology (e.g. nextjs, graphql)."""
+    return get_module(name)
+```
+
+**Step 2: Commit**
+
+```bash
+git add strix-mcp/src/strix_mcp/server.py
+git commit -m "docs(mcp): improve resource descriptions in server.py"
+```
+
+---
+
+### Task 5: Update pyproject.toml metadata
+
+**Files:**
+- Modify: `strix-mcp/pyproject.toml`
+
+**Step 1: Update description and add strix-agent dependency**
+
+```toml
+[project]
+name = "strix-mcp"
+version = "0.1.0"
+description = "MCP server exposing Strix security sandbox tools to AI coding agents"
+requires-python = ">=3.12"
+dependencies = [
+    "fastmcp>=2.0.0",
+    "httpx>=0.27.0",
+    "strix-agent",
+]
+```
+
+Key changes:
+- Description: "Claude Code" → "AI coding agents" (it's client-agnostic)
+- Added `strix-agent` as an explicit dependency (resources.py imports from `strix.skills`)
+
+**Step 2: Commit**
+
+```bash
+git add strix-mcp/pyproject.toml
+git commit -m "chore(mcp): update description and add strix-agent dependency"
+```
+
+---
+
+### Task 6: Rewrite strix-mcp/README.md
 
 **Files:**
 - Modify: `strix-mcp/README.md`
@@ -530,7 +460,6 @@ MCP (Model Context Protocol) server that exposes Strix's Docker security sandbox
 
 - Docker (running)
 - Python 3.12+
-- The `strix-agent` package (installed automatically as a dependency)
 
 ## Installation
 
@@ -631,7 +560,7 @@ Tools added by the MCP server for AI agent coordination — not part of the core
 | Tool | Description |
 |------|-------------|
 | `start_scan` | Boot sandbox, detect tech stack, generate scan plan |
-| `finish_scan` | Tear down sandbox, deduplicate findings, OWASP summary |
+| `end_scan` | Tear down sandbox, deduplicate findings, OWASP summary |
 | `dispatch_agent` | Register subagent and compose ready-to-use prompt |
 | `get_scan_status` | Monitor scan progress and pending chains |
 | `list_vulnerability_reports` | List filed reports (summaries, deduplication check) |
@@ -650,7 +579,7 @@ These Strix tools are not yet proxied through the MCP server.
 | `create_todo` / `list_todos` / `update_todo` / `mark_todo_done` / `mark_todo_pending` / `delete_todo` | Todos | Task tracking within scans |
 | `think` | Analysis | Record reasoning and analysis steps |
 | `web_search` | Reconnaissance | Search via Perplexity AI for security intelligence |
-| `finish_scan` (native) | Completion | Native Strix scan finalization with executive summary (MCP has its own `finish_scan` with OWASP grouping) |
+| `finish_scan` | Completion | Native Strix scan finalization with executive summary, methodology, and recommendations |
 | `view_agent_graph` / `create_agent` / `send_message_to_agent` / `agent_finish` / `wait_for_message` | Agent Graph | Native Strix multi-agent orchestration (MCP uses `dispatch_agent` instead) |
 
 ### Resources
@@ -696,14 +625,12 @@ git commit -m "docs(mcp): rewrite README with coverage map and multi-client setu
 
 ---
 
-### Task 6: Add MCP mention to root README.md
+### Task 7: Add MCP mention to root README.md
 
 **Files:**
 - Modify: `README.md`
 
-**Step 1: Add MCP section**
-
-Add after the "Advanced Testing Scenarios" section (before "Headless Mode"), a new section:
+**Step 1: Add MCP section after "Advanced Testing Scenarios" (before "Headless Mode")**
 
 ```markdown
 ### MCP Server (AI Agent Integration)
@@ -726,34 +653,23 @@ git commit -m "docs: add MCP server section to root README"
 
 ---
 
-### Task 7: Update strix-mcp/README.md tool table in old locations
+### Task 8: Final verification
 
-**Files:**
-- Modify: `strix-mcp/src/strix_mcp/methodology.md:5,133`
-
-**Step 1: Update methodology.md step 5 reference**
-
-Line 5 currently says "End the scan". No change needed — it's generic enough.
-
-Line 133 was already updated in Task 1 (`end_scan` → `finish_scan`).
-
-**Step 2: Verify no other stale references exist**
+**Step 1: Check for stale references**
 
 Run:
 ```bash
-cd strix-mcp && grep -rn "end_scan\|register_agent" src/ tests/ README.md --include="*.py" --include="*.md" | grep -v "test_integration"
+cd strix-mcp && grep -rn "register_agent" src/ README.md --include="*.py" --include="*.md" | grep -v "sandbox.register_agent" | grep -v "test_integration"
 ```
 
-Expected: No results (all references updated).
+Expected: No results (all public-facing references removed; internal `sandbox.register_agent()` calls are fine).
 
-**Step 3: Run full test suite**
+**Step 2: Run full test suite**
 
 Run: `cd strix-mcp && python -m pytest tests/ -v --tb=short -o "addopts=" --ignore=tests/test_integration.py`
 Expected: All pass
 
-**Step 4: Commit (if any remaining fixes)**
+**Step 3: Review diff**
 
-```bash
-git add -A strix-mcp/
-git commit -m "chore(mcp): clean up remaining stale references"
-```
+Run: `git diff --stat HEAD~8` (or however many commits were made)
+Verify only expected files changed.
