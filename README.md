@@ -173,6 +173,16 @@ strix --target api.your-app.com --instruction "Focus on business logic flaws and
 strix --target api.your-app.com --instruction-file ./instruction.md
 ```
 
+### MCP Server (AI Agent Integration)
+
+Use Strix as an MCP server to integrate with AI coding agents like Claude Code, Cursor, and Windsurf:
+
+```bash
+pip install strix-mcp
+```
+
+See [`strix-mcp/README.md`](strix-mcp/README.md) for setup instructions and the full tool coverage map.
+
 ### Headless Mode
 
 Run Strix programmatically without interactive UI using the `-n/--non-interactive` flag—perfect for servers and automated jobs. The CLI prints real-time vulnerability findings, and the final report before exiting. Exits with non-zero code when vulnerabilities are found.

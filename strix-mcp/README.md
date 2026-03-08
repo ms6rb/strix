@@ -1,10 +1,10 @@
 # Strix MCP Server
 
-MCP server that exposes Strix's Docker security sandbox tools to Claude Code, enabling AI-driven penetration testing directly from your IDE. Eliminates the need to run Strix as a standalone tool.
+MCP (Model Context Protocol) server that exposes Strix's Docker security sandbox to AI coding agents. Works with any MCP-compatible client — Claude Code, Cursor, Windsurf, Cline, and others.
 
 ## Prerequisites
 
-- Docker running
+- Docker (running)
 - Python 3.12+
 
 ## Installation
@@ -15,7 +15,9 @@ pip install strix-mcp
 
 The Docker image (~2GB) is pulled automatically on first scan.
 
-## Claude Code Configuration
+## Client Configuration
+
+### Claude Code
 
 Add to your project's `.mcp.json` or `~/.claude/mcp_servers.json`:
 
@@ -30,56 +32,142 @@ Add to your project's `.mcp.json` or `~/.claude/mcp_servers.json`:
 }
 ```
 
+### Cursor
+
+Add to `.cursor/mcp.json`:
+
+```json
+{
+  "mcpServers": {
+    "strix": {
+      "command": "strix-mcp",
+      "args": []
+    }
+  }
+}
+```
+
+### Windsurf
+
+Add to `~/.codeium/windsurf/mcp_config.json`:
+
+```json
+{
+  "mcpServers": {
+    "strix": {
+      "command": "strix-mcp",
+      "args": []
+    }
+  }
+}
+```
+
+### Other MCP Clients
+
+Any client that supports MCP stdio transport can use strix-mcp. Point it at the `strix-mcp` command with no arguments.
+
 ## Quick Start
 
-Ask Claude Code:
+Ask your AI agent:
 
 > "Start a security scan on ./my-app and test for OWASP Top 10 vulnerabilities"
 
-Claude will boot a Kali Linux sandbox, copy your code, and begin testing.
+The agent will boot a Kali Linux sandbox, copy your code, and begin testing.
 
-## Available Tools
+## Workflow
+
+1. `start_scan` — boot sandbox, detect tech stack, get recommended scan plan
+2. `dispatch_agent` — for each testing area, register a subagent and get a ready-to-use prompt
+3. Pass each prompt to your AI agent's sub-agent/tool system — agents test in parallel with isolated sessions
+4. Agents file findings with `create_vulnerability_report` (auto-dedup, auto-chain detection)
+5. `suggest_chains` — review chaining opportunities, dispatch follow-up agents
+6. `end_scan` — tear down sandbox, get deduplicated OWASP-categorized summary
+
+## Strix Feature Coverage
+
+This MCP server exposes Strix's sandbox tools to external AI agents. Below is the coverage map against the full Strix tool suite.
+
+### Proxied Tools
+
+These tools are forwarded directly to the Strix sandbox container — same behavior as native Strix.
+
+| Tool | Description | Parity |
+|------|-------------|--------|
+| `terminal_execute` | Execute commands in persistent Kali Linux terminal | Full |
+| `send_request` | Send HTTP requests through Caido proxy | Full |
+| `repeat_request` | Replay captured requests with modifications | Full |
+| `list_requests` | Filter proxy traffic with HTTPQL | Full |
+| `view_request` | Inspect request/response details | Full |
+| `browser_action` | Control Playwright browser (returns screenshots) | Full |
+| `python_action` | Run Python in persistent interpreter sessions | Full |
+| `list_files` | List sandbox workspace files | Full |
+| `search_files` | Search file contents by pattern | Full |
+| `str_replace_editor` | Edit files in sandbox | Partial — str_replace only, no create/view/insert |
+| `scope_rules` | Manage proxy scope filtering | Full |
+| `list_sitemap` | View discovered attack surface | Full |
+| `view_sitemap_entry` | Inspect sitemap entry details | Full |
+
+### MCP Orchestration Layer
+
+Tools implemented by the MCP server for AI agent coordination — not proxied from the Strix sandbox.
 
 | Tool | Description |
 |------|-------------|
-| `start_scan` | Boot Docker sandbox with targets |
-| `end_scan` | Tear down sandbox, get vulnerability summary |
-| `register_agent` | Register subagent for parallel testing |
-| `create_vulnerability_report` | Save confirmed vulnerability finding |
-| `terminal_execute` | Run commands in persistent Kali terminal |
-| `send_request` | Send HTTP request through Caido proxy |
-| `repeat_request` | Replay/modify captured proxy requests |
-| `list_requests` | Filter proxy traffic with HTTPQL |
-| `view_request` | Inspect request/response details |
-| `browser_action` | Control Playwright browser (returns screenshots) |
-| `python_action` | Run Python in persistent interpreter |
-| `list_files` | List sandbox workspace files |
-| `search_files` | Search file contents by pattern |
-| `str_replace_editor` | Edit files in sandbox |
-| `scope_rules` | Manage proxy scope filtering |
-| `list_sitemap` | View discovered attack surface |
-| `view_sitemap_entry` | Inspect sitemap entry details |
+| `start_scan` | Boot sandbox, detect tech stack, generate scan plan |
+| `end_scan` | Tear down sandbox, deduplicate findings, OWASP summary |
+| `create_vulnerability_report` | File findings with auto-dedup, chain detection, and disk persistence (simplified interface vs native) |
+| `dispatch_agent` | Register subagent and compose ready-to-use prompt |
+| `get_scan_status` | Monitor scan progress and pending chains |
+| `list_vulnerability_reports` | List filed reports (summaries, deduplication check) |
+| `get_finding` | Read full finding details from disk |
+| `get_module` | Load security knowledge module |
+| `list_modules` | List available knowledge modules |
+| `suggest_chains` | Review vulnerability chaining opportunities |
 
-## Available Resources
+### Not Yet Supported
 
-| Resource | Description |
-|----------|-------------|
-| `strix://methodology` | Penetration testing playbook |
-| `strix://modules` | List available security knowledge modules |
-| `strix://modules/{name}` | Get specific module (e.g., sql_injection, xss) |
+These Strix tools are not yet available through the MCP server.
 
-## Subagent Workflow
+| Tool | Category | Notes |
+|------|----------|-------|
+| `create_note` / `list_notes` / `update_note` / `delete_note` | Notes | Structured note-taking during scans |
+| `create_todo` / `list_todos` / `update_todo` / `mark_todo_done` / `mark_todo_pending` / `delete_todo` | Todos | Task tracking within scans |
+| `think` | Analysis | Record reasoning and analysis steps |
+| `web_search` | Reconnaissance | Search via Perplexity AI for security intelligence |
+| `finish_scan` | Completion | Native scan finalization with executive summary, methodology, and recommendations |
+| `create_vulnerability_report` (native) | Reporting | Full CVSS XML breakdown, CWE/CVE, code locations, PoC scripts (MCP uses simplified interface) |
+| `str_replace_editor` create/view/insert | File Editing | MCP only exposes str_replace; create, view, view_range, insert_line not yet proxied |
+| `view_agent_graph` / `create_agent` / `send_message_to_agent` / `agent_finish` / `wait_for_message` | Agent Graph | Native multi-agent orchestration (MCP uses `dispatch_agent` instead) |
 
-Claude Code can spawn parallel security testing agents:
+### Resources
 
-1. Main agent calls `start_scan` to boot the sandbox
-2. Each subagent calls `register_agent` to get an isolated session
-3. Subagents test different vulnerability classes concurrently
-4. Each agent has isolated terminal, browser, and Python sessions
-5. Main agent collects results and calls `end_scan`
+| URI | Description |
+|-----|-------------|
+| `strix://methodology` | Penetration testing playbook and orchestration guide |
+| `strix://modules` | List of available security knowledge modules |
+| `strix://modules/{name}` | Specific module content (e.g. `strix://modules/sql_injection`) |
+
+## Architecture
+
+The MCP server acts as a bridge between AI agents and a Strix Docker sandbox:
+
+```
+AI Agent (Claude Code, Cursor, etc.)
+    ↕ MCP (stdio)
+strix-mcp server
+    ↕ HTTP
+Strix Docker Container (Kali Linux)
+    ├── Caido proxy
+    ├── Playwright browser
+    ├── Terminal sessions
+    ├── Python interpreter
+    └── Security tools (nuclei, sqlmap, ffuf, etc.)
+```
+
+All agents share one container but get isolated sessions (terminal, browser, Python) via `agent_id`.
 
 ## Known Limitations
 
 - One scan at a time per MCP server instance
-- Heavy dependency on `strix-agent` package (acceptable for v0.1, future vendoring planned)
 - First scan requires Docker image pull (~2GB)
+- Agent graph tools not supported — MCP uses its own orchestration via `dispatch_agent`

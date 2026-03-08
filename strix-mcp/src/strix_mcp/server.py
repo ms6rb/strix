@@ -23,25 +23,25 @@ register_tools(mcp, sandbox)
 # Register resources
 @mcp.resource("strix://methodology")
 def methodology_resource() -> str:
-    """Penetration testing methodology and assessment playbook.
-    Read this before starting a security scan to understand the
-    testing approach, vulnerability priorities, and available tools."""
+    """Penetration testing methodology and orchestration playbook.
+    Covers scan workflow, subagent dispatch, vulnerability chaining,
+    severity guidelines, and sandbox environment details.
+    Read this before starting a security scan."""
     return get_methodology()
 
 
 @mcp.resource("strix://modules")
 def modules_list_resource() -> str:
-    """List all available security knowledge modules with categories.
-    Each module provides specialized expertise for a vulnerability type
-    or technology. Read relevant modules before testing."""
+    """JSON list of all available security knowledge modules with categories
+    and descriptions. Use this to discover modules before loading them with get_module."""
     return list_modules()
 
 
 @mcp.resource("strix://modules/{name}")
 def module_resource(name: str) -> str:
-    """Get specialized security knowledge for a vulnerability type or technology.
-    Available modules include: sql_injection, xss, idor, ssrf, xxe, rce, csrf,
-    authentication_jwt, business_logic, race_conditions, fastapi, nextjs, firebase, graphql."""
+    """Load a specific security knowledge module by name. Each module provides
+    exploitation techniques, bypass methods, and validation requirements for
+    a vulnerability class (e.g. sql_injection, xss, idor) or technology (e.g. nextjs, graphql)."""
     return get_module(name)
 
 
