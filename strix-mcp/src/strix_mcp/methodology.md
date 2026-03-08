@@ -87,16 +87,37 @@ For EACH agent in the plan:
 
 ### Step 3: Process Results (Phase 2 — Targeted Follow-ups)
 
-As subagents return findings:
-- Review each finding for accuracy and severity
-- Look for cross-cutting insights — one agent's findings may inform another's work
-- Look for chaining opportunities (e.g., IDOR + CSRF, XSS + session hijack, SSRF + internal API access)
-- Dispatch follow-up subagents for:
-  - Chaining attacks combining findings from different agents
-  - Deeper testing in areas where Phase 1 found promising leads
-  - Dynamic testing of vulnerabilities found through static analysis
-- Use `get_scan_status` to monitor progress: see how many agents are running, how many findings have been filed, and elapsed time
-- File each confirmed vulnerability using `create_vulnerability_report`
+As subagents return findings, look for **chaining opportunities** — combinations that escalate severity:
+
+**Chaining Patterns (dispatch follow-up agents for these):**
+
+| Phase 1 Finding | + Phase 1 Finding | = Phase 2 Chain | Priority |
+|---|---|---|---|
+| XSS (any) | Session cookies without HttpOnly | Account takeover via session hijack | critical |
+| SSRF | Internal API endpoints discovered | Internal service exploitation, cloud metadata theft | critical |
+| IDOR (read) | Admin/privileged endpoints found | Privilege escalation to admin data | critical |
+| SQL Injection | Authentication system identified | Auth bypass via SQLi, credential dump | critical |
+| Open Redirect | OAuth/SSO flow detected | Token theft via redirect manipulation | high |
+| File Upload | Path traversal or LFI | Remote code execution via uploaded webshell | critical |
+| CSRF | Password change / email change endpoint | Account takeover via forced password reset | high |
+| Mass Assignment | Role/permission field identified | Privilege escalation via role assignment | critical |
+| Race Condition | Financial transaction endpoint | Balance manipulation, double-spend | high |
+| Information Disclosure | Internal IPs / service names leaked | Targeted SSRF to internal services | high |
+
+**Decision process:**
+1. Collect all Phase 1 findings
+2. For each row above, check if BOTH columns match findings from different agents
+3. If yes, dispatch a new agent specifically for the chain — give it BOTH original findings as context
+4. Chain agents should attempt the full exploit chain and document the combined impact
+
+**Phase 2 agent template addition:**
+Include in the agent prompt: "Phase 1 agents found: [finding A summary] and [finding B summary]. Your goal: combine these into [chain description]. Attempt the full chain and report the combined severity."
+
+**Other Phase 2 triggers:**
+- If any agent found authentication issues → dispatch a dedicated privilege escalation agent
+- If API endpoints were enumerated → dispatch a targeted IDOR agent against ALL endpoints
+- If any agent found input reflection → dispatch a comprehensive XSS agent with all reflected parameters
+- Use `get_scan_status` to monitor progress and `list_vulnerability_reports` to review all findings before dispatching
 
 ### Step 4: End the Scan
 
