@@ -532,35 +532,35 @@ The agent will boot a Kali Linux sandbox, copy your code, and begin testing.
 
 This MCP server exposes Strix's sandbox tools to external AI agents. Below is the coverage map against the full Strix tool suite.
 
-### Proxied Tools (full parity with Strix)
+### Proxied Tools
 
 These tools are forwarded directly to the Strix sandbox container — same behavior as native Strix.
 
-| Tool | Description |
-|------|-------------|
-| `terminal_execute` | Execute commands in persistent Kali Linux terminal |
-| `send_request` | Send HTTP requests through Caido proxy |
-| `repeat_request` | Replay captured requests with modifications |
-| `list_requests` | Filter proxy traffic with HTTPQL |
-| `view_request` | Inspect request/response details |
-| `browser_action` | Control Playwright browser (returns screenshots) |
-| `python_action` | Run Python in persistent interpreter sessions |
-| `list_files` | List sandbox workspace files |
-| `search_files` | Search file contents by pattern |
-| `str_replace_editor` | Edit files in sandbox |
-| `scope_rules` | Manage proxy scope filtering |
-| `list_sitemap` | View discovered attack surface |
-| `view_sitemap_entry` | Inspect sitemap entry details |
-| `create_vulnerability_report` | File confirmed vulnerability findings |
+| Tool | Description | Parity |
+|------|-------------|--------|
+| `terminal_execute` | Execute commands in persistent Kali Linux terminal | Full |
+| `send_request` | Send HTTP requests through Caido proxy | Full |
+| `repeat_request` | Replay captured requests with modifications | Full |
+| `list_requests` | Filter proxy traffic with HTTPQL | Full |
+| `view_request` | Inspect request/response details | Full |
+| `browser_action` | Control Playwright browser (returns screenshots) | Full |
+| `python_action` | Run Python in persistent interpreter sessions | Full |
+| `list_files` | List sandbox workspace files | Full |
+| `search_files` | Search file contents by pattern | Full |
+| `str_replace_editor` | Edit files in sandbox | Partial — str_replace only, no create/view/insert |
+| `scope_rules` | Manage proxy scope filtering | Full |
+| `list_sitemap` | View discovered attack surface | Full |
+| `view_sitemap_entry` | Inspect sitemap entry details | Full |
 
 ### MCP Orchestration Layer
 
-Tools added by the MCP server for AI agent coordination — not part of the core Strix sandbox.
+Tools implemented by the MCP server for AI agent coordination — not proxied from the Strix sandbox.
 
 | Tool | Description |
 |------|-------------|
 | `start_scan` | Boot sandbox, detect tech stack, generate scan plan |
 | `end_scan` | Tear down sandbox, deduplicate findings, OWASP summary |
+| `create_vulnerability_report` | File findings with auto-dedup, chain detection, and disk persistence (simplified interface vs native) |
 | `dispatch_agent` | Register subagent and compose ready-to-use prompt |
 | `get_scan_status` | Monitor scan progress and pending chains |
 | `list_vulnerability_reports` | List filed reports (summaries, deduplication check) |
@@ -571,7 +571,7 @@ Tools added by the MCP server for AI agent coordination — not part of the core
 
 ### Not Yet Supported
 
-These Strix tools are not yet proxied through the MCP server.
+These Strix tools are not yet available through the MCP server.
 
 | Tool | Category | Notes |
 |------|----------|-------|
@@ -579,8 +579,10 @@ These Strix tools are not yet proxied through the MCP server.
 | `create_todo` / `list_todos` / `update_todo` / `mark_todo_done` / `mark_todo_pending` / `delete_todo` | Todos | Task tracking within scans |
 | `think` | Analysis | Record reasoning and analysis steps |
 | `web_search` | Reconnaissance | Search via Perplexity AI for security intelligence |
-| `finish_scan` | Completion | Native Strix scan finalization with executive summary, methodology, and recommendations |
-| `view_agent_graph` / `create_agent` / `send_message_to_agent` / `agent_finish` / `wait_for_message` | Agent Graph | Native Strix multi-agent orchestration (MCP uses `dispatch_agent` instead) |
+| `finish_scan` | Completion | Native scan finalization with executive summary, methodology, and recommendations |
+| `create_vulnerability_report` (native) | Reporting | Full CVSS XML breakdown, CWE/CVE, code locations, PoC scripts (MCP uses simplified interface) |
+| `str_replace_editor` create/view/insert | File Editing | MCP only exposes str_replace; create, view, view_range, insert_line not yet proxied |
+| `view_agent_graph` / `create_agent` / `send_message_to_agent` / `agent_finish` / `wait_for_message` | Agent Graph | Native multi-agent orchestration (MCP uses `dispatch_agent` instead) |
 
 ### Resources
 
