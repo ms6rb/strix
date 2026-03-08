@@ -55,7 +55,12 @@ git commit -m "refactor(mcp): remove register_agent public tool, dispatch_agent 
 **Files:**
 - Modify: `strix-mcp/src/strix_mcp/tools.py` (proxied tools section)
 
-Update docstrings for all 14 proxied tools. Match original strix parameter names and types, add explicit enum values inline. Each step below is one tool's docstring replacement.
+Update docstrings for all 13 proxied tools. Match original strix parameter names and types, add explicit enum values inline. Each step below is one tool's docstring replacement.
+
+**Note:** Every proxied tool has an MCP-specific `agent_id: str | None = None` parameter (not in the original strix tools). Add this line to every proxied tool's docstring:
+```
+agent_id: subagent identifier from dispatch_agent (omit for coordinator)
+```
 
 **Step 1: `browser_action`**
 
@@ -527,6 +532,15 @@ Ask your AI agent:
 > "Start a security scan on ./my-app and test for OWASP Top 10 vulnerabilities"
 
 The agent will boot a Kali Linux sandbox, copy your code, and begin testing.
+
+## Workflow
+
+1. `start_scan` — boot sandbox, detect tech stack, get recommended scan plan
+2. `dispatch_agent` — for each testing area, register a subagent and get a ready-to-use prompt
+3. Pass each prompt to your AI agent's sub-agent/tool system — agents test in parallel with isolated sessions
+4. Agents file findings with `create_vulnerability_report` (auto-dedup, auto-chain detection)
+5. `suggest_chains` — review chaining opportunities, dispatch follow-up agents
+6. `end_scan` — tear down sandbox, get deduplicated OWASP-categorized summary
 
 ## Strix Feature Coverage
 
