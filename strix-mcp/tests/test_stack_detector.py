@@ -287,3 +287,59 @@ class TestGeneratePlanNewTemplates:
         """nestjs trigger should include the nestjs module."""
         from strix_mcp.stack_detector import MODULE_RULES
         assert "nestjs" in MODULE_RULES["nestjs"]
+
+    def test_django_triggers_django_agent(self):
+        stack = {
+            "runtime": ["python"], "framework": ["django"], "database": ["sql"],
+            "auth": [], "features": [], "api_style": ["rest"],
+            "infrastructure": [],
+        }
+        plan = generate_plan(stack)
+        tasks = [p["task"] for p in plan]
+        assert any("Django" in t for t in tasks)
+
+    def test_wordpress_triggers_wordpress_agent(self):
+        stack = {
+            "runtime": ["php"], "framework": ["wordpress"], "database": [],
+            "auth": [], "features": [], "api_style": ["rest"],
+            "infrastructure": [],
+        }
+        plan = generate_plan(stack)
+        tasks = [p["task"] for p in plan]
+        assert any("WordPress" in t for t in tasks)
+
+    def test_laravel_triggers_laravel_agent(self):
+        stack = {
+            "runtime": ["php"], "framework": ["laravel"], "database": ["sql"],
+            "auth": [], "features": [], "api_style": ["rest"],
+            "infrastructure": [],
+        }
+        plan = generate_plan(stack)
+        tasks = [p["task"] for p in plan]
+        assert any("Laravel" in t for t in tasks)
+
+    def test_rails_triggers_rails_agent(self):
+        stack = {
+            "runtime": ["ruby"], "framework": ["rails"], "database": ["sql"],
+            "auth": [], "features": [], "api_style": ["rest"],
+            "infrastructure": [],
+        }
+        plan = generate_plan(stack)
+        tasks = [p["task"] for p in plan]
+        assert any("Rails" in t for t in tasks)
+
+    def test_express_triggers_express_agent(self):
+        stack = {
+            "runtime": ["node"], "framework": ["express"], "database": [],
+            "auth": ["jwt"], "features": [], "api_style": ["rest"],
+            "infrastructure": [],
+        }
+        plan = generate_plan(stack)
+        tasks = [p["task"] for p in plan]
+        assert any("Express" in t for t in tasks)
+
+    def test_framework_rules_exist(self):
+        """All framework triggers should have MODULE_RULES entries."""
+        from strix_mcp.stack_detector import MODULE_RULES
+        for fw in ["django", "flask", "laravel", "wordpress", "rails", "express"]:
+            assert fw in MODULE_RULES, f"Missing MODULE_RULES for {fw}"

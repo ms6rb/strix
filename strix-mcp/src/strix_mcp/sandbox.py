@@ -284,4 +284,50 @@ class SandboxManager:
 
         stack = detect_stack_from_http(signals)
         plan = generate_plan(stack)
-        return {"detected_stack": stack, "recommended_plan": plan}
+        result: dict[str, Any] = {
+            "detected_stack": stack,
+            "recommended_plan": plan,
+        }
+
+        # Auto-fetch OpenAPI spec if swagger was detected
+        if "swagger" in stack.get("features", []):
+            spec = await self._fetch_openapi_spec(url)
+            if spec:
+                result["openapi_spec"] = spec
+
+        return result
+
+    async def _fetch_openapi_spec(self, base_url: str) -> dict[str, Any] | None:
+        """Try to fetch an OpenAPI/Swagger spec from common paths."""
+        spec_paths = [
+            "/openapi.json", "/api-json", "/api/openapi.json",
+            "/swagger.json", "/api/swagger.json", "/v1/api-docs",
+        ]
+        for path in spec_paths:
+            spec_url = base_url.rstrip("/") + path
+            result = await self.proxy_tool("send_request", {
+                "method": "GET",
+                "url": spec_url,
+                "timeout": 10,
+            })
+            if isinstance(result, dict) and not result.get("error"):
+                status = result.get("response", {}).get("status_code", 0)
+                if status == 200:
+                    body = result.get("response", {}).get("body", "")
+                    if isinstance(body, str) and body.strip().startswith("{"):
+                        try:
+                            import json
+                            spec = json.loads(body)
+                            if "paths" in spec or "openapi" in spec or "swagger" in spec:
+                                # Extract just the endpoint list to avoid bloating context
+                                paths = list(spec.get("paths", {}).keys())
+                                return {
+                                    "source": spec_url,
+                                    "title": spec.get("info", {}).get("title", ""),
+                                    "version": spec.get("info", {}).get("version", ""),
+                                    "endpoints": paths,
+                                    "total_endpoints": len(paths),
+                                }
+                        except (json.JSONDecodeError, ValueError):
+                            continue
+        return None

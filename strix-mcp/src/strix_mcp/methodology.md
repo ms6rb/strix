@@ -27,6 +27,8 @@ Review the plan. You may adjust it based on your own analysis — add agents, re
 
 If you need to see all available modules, call `list_modules()` for the full catalog with categories and descriptions.
 
+**OpenAPI/Swagger auto-discovery:** If `start_scan` returns an `openapi_spec` field, it means a Swagger/OpenAPI spec was found. Use the `endpoints` list to map the full attack surface and pass relevant endpoints to subagents in their task descriptions. This dramatically improves coverage — subagents will know every API endpoint without needing to discover them manually.
+
 ### Web-Only Targets (no source code)
 
 When your targets are web applications, domains, or IP addresses (not local code):

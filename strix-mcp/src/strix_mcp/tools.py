@@ -63,6 +63,8 @@ _OWASP_KEYWORDS: list[tuple[str, list[str]]] = [
         "idor", "bac", "broken access", "insecure direct object",
         "privilege escalation", "path traversal", "directory traversal",
         "forced browsing", "cors", "missing access control",
+        "open redirect", "unauthorized access", "access control",
+        "subdomain takeover",
     ]),
     ("A02 Cryptographic Failures", [
         "weak cipher", "weak encryption", "cleartext", "plain text password",
@@ -73,6 +75,7 @@ _OWASP_KEYWORDS: list[tuple[str, list[str]]] = [
         "command injection", "xxe", "xml external entity", "ldap injection",
         "xpath injection", "template injection", "ssti", "crlf injection",
         "header injection", "rce", "remote code execution", "code injection",
+        "prototype pollution",
     ]),
     ("A04 Insecure Design", [
         "business logic", "race condition", "mass assignment",
@@ -84,6 +87,8 @@ _OWASP_KEYWORDS: list[tuple[str, list[str]]] = [
         "server information", "debug mode", "default credential",
         "directory listing", "stack trace", "verbose error",
         "sentry", "source map", "security header",
+        "information disclosure", "exposed env", "actuator exposed",
+        "swagger exposed", "phpinfo", "server version",
     ]),
     ("A06 Vulnerable and Outdated Components", [
         "outdated", "vulnerable component", "known vulnerability",

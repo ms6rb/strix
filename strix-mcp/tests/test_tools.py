@@ -92,6 +92,18 @@ class TestOwaspCategorization:
     def test_ssrf_maps_to_ssrf(self):
         assert _categorize_owasp("SSRF via image URL") == "A10 Server-Side Request Forgery"
 
+    def test_open_redirect_maps_to_bac(self):
+        assert _categorize_owasp("Open Redirect in login") == "A01 Broken Access Control"
+
+    def test_information_disclosure_maps_to_misconfig(self):
+        assert _categorize_owasp("Information Disclosure via debug endpoint") == "A05 Security Misconfiguration"
+
+    def test_subdomain_takeover_maps_to_bac(self):
+        assert _categorize_owasp("Subdomain Takeover on cdn.example.com") == "A01 Broken Access Control"
+
+    def test_prototype_pollution_maps_to_injection(self):
+        assert _categorize_owasp("Prototype Pollution in merge function") == "A03 Injection"
+
 
 class TestDeduplicateReports:
     def test_dedup_removes_exact_duplicates(self):

@@ -27,6 +27,12 @@ MODULE_RULES: dict[str, list[str]] = {
     "graphql": ["graphql"],
     "firebase": ["firebase_firestore"],
     "supabase": ["supabase"],
+    "django": ["csrf", "mass_assignment", "authentication_jwt"],
+    "flask": ["authentication_jwt", "mass_assignment"],
+    "laravel": ["csrf", "mass_assignment", "sql_injection"],
+    "wordpress": ["xss", "sql_injection", "authentication_jwt", "path_traversal_lfi_rfi"],
+    "rails": ["csrf", "mass_assignment", "sql_injection"],
+    "express": ["authentication_jwt", "mass_assignment"],
     "domain": ["subdomain_takeover"],
     "web_app": [
         "xss",
@@ -141,6 +147,36 @@ _AGENT_TEMPLATES: list[dict[str, Any]] = [
         "modules": ["subdomain_takeover"],
         "priority": "medium",
         "triggers": ["domain"],
+    },
+    {
+        "task": "Test Django-specific vulnerabilities (ORM injection, CSRF bypass, template injection, admin panel, serialization)",
+        "modules": ["csrf", "mass_assignment", "authentication_jwt", "sql_injection"],
+        "priority": "high",
+        "triggers": ["django"],
+    },
+    {
+        "task": "Test WordPress-specific vulnerabilities (plugin/theme exploits, SQLi, XSS, auth bypass, file upload abuse)",
+        "modules": ["xss", "sql_injection", "authentication_jwt", "path_traversal_lfi_rfi", "insecure_file_uploads"],
+        "priority": "high",
+        "triggers": ["wordpress"],
+    },
+    {
+        "task": "Test Laravel-specific vulnerabilities (mass assignment, CSRF bypass, Eloquent injection, debug mode exposure)",
+        "modules": ["csrf", "mass_assignment", "sql_injection", "information_disclosure"],
+        "priority": "high",
+        "triggers": ["laravel"],
+    },
+    {
+        "task": "Test Rails-specific vulnerabilities (mass assignment, CSRF bypass, ActiveRecord injection, deserialization)",
+        "modules": ["csrf", "mass_assignment", "sql_injection"],
+        "priority": "high",
+        "triggers": ["rails"],
+    },
+    {
+        "task": "Test Express.js-specific vulnerabilities (middleware bypass, prototype pollution, NoSQL injection, session handling)",
+        "modules": ["authentication_jwt", "mass_assignment", "business_logic"],
+        "priority": "high",
+        "triggers": ["express"],
     },
 ]
 
