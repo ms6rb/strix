@@ -20,13 +20,14 @@ MODULE_RULES: dict[str, list[str]] = {
     "postgresql": ["sql_injection"],
     "mysql": ["sql_injection"],
     "sqlite": ["sql_injection"],
-    "nestjs": ["mass_assignment"],
+    "nestjs": ["nestjs", "mass_assignment"],
     "fastapi": ["fastapi", "mass_assignment"],
     "nextjs": ["nextjs", "ssrf"],
     "file_upload": ["insecure_file_uploads", "path_traversal_lfi_rfi"],
     "graphql": ["graphql"],
     "firebase": ["firebase_firestore"],
     "supabase": ["supabase"],
+    "domain": ["subdomain_takeover"],
     "web_app": [
         "xss",
         "csrf",
@@ -35,6 +36,9 @@ MODULE_RULES: dict[str, list[str]] = {
         "rce",
         "race_conditions",
         "broken_function_level_authorization",
+        "information_disclosure",
+        "open_redirect",
+        "path_traversal_lfi_rfi",
     ],
 }
 
@@ -113,6 +117,30 @@ _AGENT_TEMPLATES: list[dict[str, Any]] = [
         "modules": ["supabase"],
         "priority": "high",
         "triggers": ["supabase"],
+    },
+    {
+        "task": "Test NestJS-specific vulnerabilities (guard bypass, validation pipes, module boundaries, cross-transport auth)",
+        "modules": ["nestjs", "mass_assignment"],
+        "priority": "high",
+        "triggers": ["nestjs"],
+    },
+    {
+        "task": "Test information disclosure, security headers, and open redirects",
+        "modules": ["information_disclosure", "open_redirect"],
+        "priority": "medium",
+        "triggers": ["web_app"],
+    },
+    {
+        "task": "Test path traversal and file inclusion (LFI/RFI)",
+        "modules": ["path_traversal_lfi_rfi"],
+        "priority": "medium",
+        "triggers": ["web_app"],
+    },
+    {
+        "task": "Test subdomain takeover vulnerabilities",
+        "modules": ["subdomain_takeover"],
+        "priority": "medium",
+        "triggers": ["domain"],
     },
 ]
 
@@ -207,8 +235,10 @@ def generate_plan(stack: dict[str, Any]) -> list[dict[str, Any]]:
     """
     # Build active triggers
     active_triggers: set[str] = {"always", "web_app"}
-    for key in ("framework", "database", "auth", "features", "infrastructure"):
+    for key in ("runtime", "framework", "database", "auth", "features", "infrastructure"):
         active_triggers.update(stack.get(key, []))
+    # Include target-type triggers passed through stack metadata
+    active_triggers.update(stack.get("target_types", []))
 
     # Build the set of all recommended modules from active triggers
     recommended_modules: set[str] = set()
@@ -757,7 +787,15 @@ def _detect_http_probes(
     """Detect features from probing common paths."""
     if "/graphql" in probes and "200" in probes:
         features.append("graphql")
-    if "/api/swagger" in probes and "200" in probes:
+    if "/api/graphql" in probes and "200" in probes and "graphql" not in features:
+        features.append("graphql")
+    if any(p in probes for p in ("/api/swagger", "/api-docs", "/api-json", "/swagger", "/docs", "/redoc")) and "200" in probes:
         features.append("swagger")
     if "/wp-admin" in probes and ("200" in probes or "302" in probes):
         features.append("wordpress_admin")
+    if "/actuator" in probes and "200" in probes:
+        features.append("spring_actuator")
+    if "/_next/data" in probes and "200" in probes:
+        features.append("nextjs_data")
+    if "/.env" in probes and "200" in probes:
+        features.append("env_exposed")

@@ -64,7 +64,8 @@ Call the `get_module` tool for each of these modules and read the full content c
 5. For reconnaissance: run `ffuf` for directory/endpoint discovery, `nuclei` with relevant templates
 6. Check `list_vulnerability_reports` before filing to avoid duplicates
 7. Validate all findings with proof of exploitation — demonstrate concrete impact
-8. Return your findings as a structured list with: title, severity, evidence, and remediation
+8. File findings with `create_vulnerability_report` — include `affected_endpoint` and `cvss_score` when possible
+9. Return your findings as a structured list with: title, severity, evidence, and remediation
 
 ---
 
@@ -129,7 +130,8 @@ Call the `get_module` tool for each of these modules and read the full content c
 6. Never rely solely on static analysis — always attempt dynamic testing
 7. Validate all findings with proof of exploitation — demonstrate concrete impact
 8. Check `list_vulnerability_reports` before filing to avoid duplicates
-9. Return your findings as a structured list with: title, severity (critical/high/medium/low/info), evidence (requests/responses/code), and remediation
+9. File findings with `create_vulnerability_report` — include `affected_endpoint` (URL path) and `cvss_score` (0.0-10.0) when possible
+10. Return your findings as a structured list with: title, severity (critical/high/medium/low/info), evidence (requests/responses/code), and remediation
 
 ---
 

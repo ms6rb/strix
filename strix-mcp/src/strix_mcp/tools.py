@@ -183,13 +183,24 @@ def register_tools(mcp: FastMCP, sandbox: SandboxManager) -> None:
             except Exception:
                 analysis = {"detected_stack": None, "recommended_plan": []}
 
+        # Collect target type triggers for plan generation
+        target_types: list[str] = []
+        for t in targets:
+            ttype = t.get("type", "")
+            if ttype == "domain":
+                target_types.append("domain")
+
+        # Inject target types into detected stack for plan generation
+        if analysis.get("detected_stack") and target_types:
+            analysis["detected_stack"]["target_types"] = target_types
+
         # If still no plan, generate a default web plan
         if not analysis.get("recommended_plan"):
             from .stack_detector import generate_plan
-            default_stack = {
+            default_stack: dict[str, Any] = {
                 "runtime": [], "framework": [], "database": [],
                 "auth": [], "features": [], "api_style": ["rest"],
-                "infrastructure": [],
+                "infrastructure": [], "target_types": target_types,
             }
             analysis = {
                 "detected_stack": analysis.get("detected_stack") or default_stack,
@@ -223,11 +234,16 @@ def register_tools(mcp: FastMCP, sandbox: SandboxManager) -> None:
             category = _categorize_owasp(r["title"])
             if category not in findings_by_category:
                 findings_by_category[category] = []
-            findings_by_category[category].append({
+            entry: dict[str, Any] = {
                 "id": r["id"],
                 "title": r["title"],
                 "severity": r.get("severity", "info"),
-            })
+            }
+            if "affected_endpoints" in r:
+                entry["affected_endpoints"] = r["affected_endpoints"]
+            if "cvss_score" in r:
+                entry["cvss_score"] = r["cvss_score"]
+            findings_by_category[category].append(entry)
 
         await sandbox.end_scan()
 
@@ -287,10 +303,14 @@ def register_tools(mcp: FastMCP, sandbox: SandboxManager) -> None:
         title: str,
         content: str,
         severity: str,
+        affected_endpoint: str | None = None,
+        cvss_score: float | None = None,
     ) -> str:
         """Report a confirmed vulnerability finding.
         severity: critical, high, medium, low, or info.
         content: full details including PoC, impact, and remediation.
+        affected_endpoint: the URL path or component affected (e.g. /api/users/:id).
+        cvss_score: CVSS 3.1 base score (0.0-10.0) if known.
         Only report validated vulnerabilities with proof of exploitation.
 
         If a similar finding was already reported, the evidence is merged
@@ -303,6 +323,10 @@ def register_tools(mcp: FastMCP, sandbox: SandboxManager) -> None:
             severity_order = ["info", "low", "medium", "high", "critical"]
             if severity_order.index(severity) > severity_order.index(existing["severity"]):
                 existing["severity"] = severity
+            if affected_endpoint and affected_endpoint not in existing.get("affected_endpoints", []):
+                existing.setdefault("affected_endpoints", []).append(affected_endpoint)
+            if cvss_score is not None and (existing.get("cvss_score") is None or cvss_score > existing["cvss_score"]):
+                existing["cvss_score"] = cvss_score
             existing["content"] += f"\n\n---\n\n**Additional evidence:**\n{content}"
             return json.dumps({
                 "report_id": existing["id"],
@@ -312,13 +336,17 @@ def register_tools(mcp: FastMCP, sandbox: SandboxManager) -> None:
                 "merged": True,
             })
 
-        report = {
+        report: dict[str, Any] = {
             "id": f"vuln-{uuid.uuid4().hex[:8]}",
             "title": title,
             "content": content,
             "severity": severity,
             "timestamp": datetime.now(UTC).isoformat(),
         }
+        if affected_endpoint:
+            report["affected_endpoints"] = [affected_endpoint]
+        if cvss_score is not None:
+            report["cvss_score"] = cvss_score
         vulnerability_reports.append(report)
         return json.dumps({
             "report_id": report["id"],
@@ -339,7 +367,13 @@ def register_tools(mcp: FastMCP, sandbox: SandboxManager) -> None:
             filtered = list(vulnerability_reports)
         return json.dumps({
             "reports": [
-                {"id": r["id"], "title": r["title"], "severity": r["severity"]}
+                {
+                    "id": r["id"],
+                    "title": r["title"],
+                    "severity": r["severity"],
+                    **({"affected_endpoints": r["affected_endpoints"]} if "affected_endpoints" in r else {}),
+                    **({"cvss_score": r["cvss_score"]} if "cvss_score" in r else {}),
+                }
                 for r in filtered
             ],
             "total": len(filtered),

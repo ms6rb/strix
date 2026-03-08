@@ -262,7 +262,13 @@ class SandboxManager:
                 signals["body_signals"] = body[:5000]
 
         # 2. Probe common paths
-        probe_paths = ["/graphql", "/api", "/api/swagger", "/wp-admin", "/robots.txt"]
+        probe_paths = [
+            "/graphql", "/api", "/api/swagger", "/wp-admin", "/robots.txt",
+            "/api-docs", "/api-json", "/swagger", "/docs", "/redoc",
+            "/.env", "/actuator", "/actuator/health", "/debug",
+            "/metrics", "/health", "/_next/data", "/api/graphql",
+            "/server-status", "/elmah.axd", "/trace.axd",
+        ]
         probe_results: list[str] = []
         for path in probe_paths:
             probe_url = url.rstrip("/") + path

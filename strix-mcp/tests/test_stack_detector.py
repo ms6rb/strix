@@ -225,3 +225,65 @@ class TestDetectStackFromHttp:
         signals = {"headers": "Server: cloudflare\ncf-ray: abc123"}
         stack = detect_stack_from_http(signals)
         assert "cloudflare" in stack["infrastructure"]
+
+    def test_detects_actuator_from_probe(self):
+        signals = {"probe_results": "/actuator: 200\n/actuator/health: 200"}
+        stack = detect_stack_from_http(signals)
+        assert "spring_actuator" in stack["features"]
+
+    def test_detects_env_exposed_from_probe(self):
+        signals = {"probe_results": "/.env: 200"}
+        stack = detect_stack_from_http(signals)
+        assert "env_exposed" in stack["features"]
+
+    def test_detects_swagger_from_api_docs_probe(self):
+        signals = {"probe_results": "/api-docs: 200"}
+        stack = detect_stack_from_http(signals)
+        assert "swagger" in stack["features"]
+
+
+class TestGeneratePlanNewTemplates:
+    def test_nestjs_triggers_nestjs_agent(self):
+        stack = {
+            "runtime": ["node"], "framework": ["nestjs"], "database": ["sql"],
+            "auth": ["jwt"], "features": [], "api_style": ["rest"],
+            "infrastructure": [],
+        }
+        plan = generate_plan(stack)
+        tasks = [p["task"] for p in plan]
+        assert any("NestJS" in t for t in tasks)
+
+    def test_web_app_triggers_info_disclosure_agent(self):
+        stack = {
+            "runtime": [], "framework": [], "database": [],
+            "auth": [], "features": [], "api_style": ["rest"],
+            "infrastructure": [],
+        }
+        plan = generate_plan(stack)
+        tasks = [p["task"] for p in plan]
+        assert any("information disclosure" in t for t in tasks)
+
+    def test_web_app_triggers_path_traversal_agent(self):
+        stack = {
+            "runtime": [], "framework": [], "database": [],
+            "auth": [], "features": [], "api_style": ["rest"],
+            "infrastructure": [],
+        }
+        plan = generate_plan(stack)
+        tasks = [p["task"] for p in plan]
+        assert any("path traversal" in t.lower() for t in tasks)
+
+    def test_domain_target_triggers_subdomain_takeover(self):
+        stack = {
+            "runtime": [], "framework": [], "database": [],
+            "auth": [], "features": [], "api_style": ["rest"],
+            "infrastructure": [], "target_types": ["domain"],
+        }
+        plan = generate_plan(stack)
+        tasks = [p["task"] for p in plan]
+        assert any("subdomain" in t.lower() for t in tasks)
+
+    def test_nestjs_module_in_rules(self):
+        """nestjs trigger should include the nestjs module."""
+        from strix_mcp.stack_detector import MODULE_RULES
+        assert "nestjs" in MODULE_RULES["nestjs"]
