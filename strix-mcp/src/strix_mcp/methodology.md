@@ -151,6 +151,30 @@ Test ALL of these (ordered by typical impact):
 9. CSRF — Unauthorized state-changing actions
 10. Race Conditions — Financial fraud, authentication bypass, quota bypass
 
+## Severity Guide
+
+Use these baselines when assigning severity to findings. Adjust based on actual exploitability and impact.
+
+| Vulnerability Type | Typical Severity | CVSS Range | Notes |
+|---|---|---|---|
+| RCE / Command Injection | critical | 9.0-10.0 | Full system compromise |
+| SQL Injection (data access) | critical | 8.0-9.8 | Database compromise, data exfil |
+| Authentication Bypass | critical | 8.5-9.8 | Full account takeover |
+| IDOR (sensitive data) | high | 7.0-8.5 | Cross-tenant data access |
+| SSRF (internal access) | high | 7.0-9.0 | Cloud metadata, internal APIs |
+| JWT Forgery / None alg | high | 7.5-9.0 | Token impersonation |
+| Path Traversal (file read) | high | 6.5-8.5 | Sensitive file disclosure |
+| XSS (stored) | high | 6.0-8.0 | Session hijacking, credential theft |
+| Mass Assignment | medium-high | 5.5-8.0 | Depends on fields writable |
+| CSRF (state-changing) | medium | 5.0-7.0 | Unauthorized actions |
+| XSS (reflected) | medium | 4.0-6.5 | Requires user interaction |
+| Race Condition | medium | 5.0-8.0 | Financial fraud, limit bypass |
+| Open Redirect | low-medium | 3.0-5.0 | Phishing enabler |
+| Missing Security Headers | low-info | 0.0-3.0 | CSP, HSTS, X-Frame-Options |
+| Information Disclosure | low-info | 0.0-4.0 | Version, debug info, stack traces |
+
+**When in doubt:** Demonstrate the worst-case impact and rate accordingly. A reflected XSS that steals admin cookies is high, not medium.
+
 ## Sandbox Environment
 
 Docker container with Kali Linux and comprehensive security tools:
