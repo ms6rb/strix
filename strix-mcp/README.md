@@ -13,7 +13,11 @@ MCP (Model Context Protocol) server that exposes Strix's Docker security sandbox
 pip install strix-mcp
 ```
 
-The Docker image (~2GB) is pulled automatically on first scan.
+Pull the Docker image before your first scan:
+
+```bash
+docker pull ghcr.io/usestrix/strix-sandbox:0.1.12
+```
 
 ## Client Configuration
 
@@ -169,5 +173,5 @@ All agents share one container but get isolated sessions (terminal, browser, Pyt
 ## Known Limitations
 
 - One scan at a time per MCP server instance
-- First scan requires Docker image pull (~2GB)
+- Requires Docker image pull before first scan (see Installation)
 - Agent graph tools not supported — MCP uses its own orchestration via `dispatch_agent`

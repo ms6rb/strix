@@ -256,7 +256,7 @@ def register_tools(mcp: FastMCP, sandbox: SandboxManager) -> None:
         generates a recommended scan plan with module assignments. For web targets,
         fingerprints via HTTP headers, cookies, and common paths.
 
-        First run pulls the Docker image (~2GB). Subsequent runs reuse the cached image.
+        First run pulls the Docker image if not already cached.
 
         Returns: scan_id, detected_stack, recommended_plan, workspace path.
         If a Swagger/OpenAPI spec is found, returns openapi_spec with endpoint list."""
