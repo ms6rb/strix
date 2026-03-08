@@ -196,7 +196,7 @@ For each controller and method, identify:
 
 ## Bypass Techniques
 
-- Guard ordering: permissive guard after restrictive one may override the decision
+- `@Public()` / skip-metadata applied via composed decorators at method level causing global guards to skip via `Reflector` metadata checks
 - Route param pollution: `/users/123?id=456` — which `id` wins in guards vs handlers?
 - Version routing: v1 of endpoint may still be registered without the guard added to v2
 - `X-HTTP-Method-Override` or `_method` processed by Express before guards
@@ -221,3 +221,5 @@ For each controller and method, identify:
 - Module boundary leak: accessing provider or data across unauthorized module boundaries
 - Serialization leak: response containing excluded fields (passwords, internal metadata)
 - IDOR: side-by-side requests from different users showing unauthorized data access
+- ORM injection: raw query with user-controlled input returning unauthorized data, or error-based evidence of query structure
+- Cache poisoning: response from unauthenticated or different-user request matching a prior authenticated user's cached response
