@@ -164,12 +164,16 @@ class SandboxManager:
 
         client = self._ensure_http_client()
         try:
-            await client.post(
+            response = await client.post(
                 f"{scan.api_url}/register_agent",
                 params={"agent_id": agent_id},
                 headers={"Authorization": f"Bearer {scan.token}"},
                 timeout=30,
             )
+            if response.status_code >= 400:
+                raise RuntimeError(
+                    f"Sandbox rejected agent registration (HTTP {response.status_code}): {response.text}"
+                )
         except (httpx.ConnectError, httpx.TimeoutException) as e:
             raise RuntimeError(f"Failed to register agent with sandbox: {e}") from e
 

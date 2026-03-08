@@ -520,7 +520,7 @@ def _detect_package_json_fuzzy(
     if _has_dep(text, "typeorm") or _has_dep(text, "prisma") or _has_dep(text, "sequelize"):
         database.append("sql")
         found_any = True
-    if _has_dep(text, "pg"):
+    if re.search(r'["\s]pg["\s,@]', text, re.IGNORECASE):
         database.append("postgresql")
         found_any = True
     if _has_dep(text, "mysql2"):

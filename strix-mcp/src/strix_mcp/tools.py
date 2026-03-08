@@ -516,7 +516,7 @@ def register_tools(mcp: FastMCP, sandbox: SandboxManager) -> None:
 
         Returns: list of {id, title, severity, affected_endpoints, cvss_score}."""
         if severity:
-            filtered = [r for r in vulnerability_reports if r["severity"] == severity]
+            filtered = [r for r in vulnerability_reports if r["severity"] == _normalize_severity(severity)]
         else:
             filtered = list(vulnerability_reports)
         return json.dumps({
