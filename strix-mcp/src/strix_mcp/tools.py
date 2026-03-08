@@ -441,7 +441,7 @@ def register_tools(mcp: FastMCP, sandbox: SandboxManager) -> None:
 
         title: vulnerability name (e.g. "SQL Injection in /api/users")
         content: full details including proof of exploitation, impact, and remediation
-        severity: critical | high | medium | low | info
+        severity: critical | high | medium | low | info (case-insensitive; unknown values default to info)
         affected_endpoint: URL path or component affected (e.g. "/api/users/:id")
         cvss_score: CVSS 3.1 base score (0.0-10.0)
 
@@ -512,7 +512,7 @@ def register_tools(mcp: FastMCP, sandbox: SandboxManager) -> None:
         """List all vulnerability reports filed in the current scan (summaries only).
         Check this before filing a new report to avoid duplicates.
 
-        severity: optional filter — critical | high | medium | low | info
+        severity: optional filter — critical | high | medium | low | info (case-insensitive)
 
         Returns: list of {id, title, severity, affected_endpoints, cvss_score}."""
         if severity:
@@ -612,7 +612,8 @@ def register_tools(mcp: FastMCP, sandbox: SandboxManager) -> None:
         Each chain combines two findings into a higher-severity exploit path
         and includes a ready-to-use dispatch payload (task + modules) for dispatch_agent.
 
-        Returns: total_chains, new_chains count, chains list with dispatch payloads."""
+        Returns: total_chains, new_chains count, chains list with dispatch payloads.
+        Each chain includes previously_surfaced (bool) indicating if it was already detected."""
         from .chaining import detect_chains
 
         # Run detection without modifying fired set (show everything)
