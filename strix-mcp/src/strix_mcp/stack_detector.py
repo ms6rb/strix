@@ -506,7 +506,7 @@ def _detect_package_json_fuzzy(
     if _has_dep(text, "express"):
         framework.append("express")
         found_any = True
-    if _has_dep(text, "next"):
+    if re.search(r'["\s]next["\s,@:]', text, re.IGNORECASE):
         framework.append("nextjs")
         found_any = True
     if _has_dep(text, "fastify"):

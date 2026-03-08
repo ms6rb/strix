@@ -155,7 +155,8 @@ def _deduplicate_reports(
 
 def _get_run_dir(scan_id: str) -> Path:
     """Return strix_runs/<scan_id>/ in cwd, creating if needed."""
-    run_dir = Path.cwd() / "strix_runs" / scan_id
+    safe_id = Path(scan_id).name  # strip directory components
+    run_dir = Path.cwd() / "strix_runs" / safe_id
     run_dir.mkdir(parents=True, exist_ok=True)
     return run_dir
 
