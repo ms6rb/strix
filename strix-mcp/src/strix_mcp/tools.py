@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 import json
+import os
 import uuid
 from datetime import UTC, datetime
+from pathlib import Path
 from typing import Any, Sequence
 
 from fastmcp import FastMCP
@@ -141,8 +143,53 @@ def _deduplicate_reports(
     return list(seen.values())
 
 
+# --- Scan persistence ---
+
+_SCANS_DIR = Path(os.environ.get("STRIX_SCANS_DIR", Path.home() / ".strix" / "scans"))
+
+
+def _get_scan_dir(scan_id: str) -> Path:
+    """Return the directory for a scan, creating it if needed."""
+    scan_dir = _SCANS_DIR / scan_id
+    scan_dir.mkdir(parents=True, exist_ok=True)
+    return scan_dir
+
+
+def _write_scan_meta(
+    scan_dir: Path,
+    scan_id: str,
+    targets: list[dict[str, str]],
+    detected_stack: dict[str, Any] | None,
+) -> None:
+    """Write scan metadata to scan_meta.json."""
+    scan_dir.mkdir(parents=True, exist_ok=True)
+    meta = {
+        "scan_id": scan_id,
+        "started_at": datetime.now(UTC).isoformat(),
+        "targets": targets,
+        "detected_stack": detected_stack,
+    }
+    (scan_dir / "scan_meta.json").write_text(json.dumps(meta, indent=2))
+
+
+def _append_finding(scan_dir: Path, report: dict[str, Any], event: str = "new") -> None:
+    """Append a finding event as a JSON line to findings.jsonl.
+
+    event: 'new' for first report, 'merge' for duplicate merge.
+    """
+    entry = {"event": event, **report}
+    with open(scan_dir / "findings.jsonl", "a") as f:
+        f.write(json.dumps(entry) + "\n")
+
+
+def _write_report(scan_dir: Path, summary: dict[str, Any]) -> None:
+    """Write the final scan report to report.json."""
+    (scan_dir / "report.json").write_text(json.dumps(summary, indent=2))
+
+
 def register_tools(mcp: FastMCP, sandbox: SandboxManager) -> None:
     vulnerability_reports: list[dict[str, Any]] = []
+    scan_dir: Path | None = None
 
     # --- Lifecycle Tools ---
 
@@ -212,6 +259,10 @@ def register_tools(mcp: FastMCP, sandbox: SandboxManager) -> None:
                 "recommended_plan": generate_plan(default_stack),
             }
 
+        nonlocal scan_dir
+        scan_dir = _get_scan_dir(sid)
+        _write_scan_meta(scan_dir, sid, targets, analysis.get("detected_stack"))
+
         return json.dumps({
             "scan_id": state.scan_id,
             "status": "running",
@@ -250,9 +301,7 @@ def register_tools(mcp: FastMCP, sandbox: SandboxManager) -> None:
                 entry["cvss_score"] = r["cvss_score"]
             findings_by_category[category].append(entry)
 
-        await sandbox.end_scan()
-
-        return json.dumps({
+        summary = {
             "status": "stopped",
             "message": "Sandbox destroyed. Scan ended.",
             "unique_findings": len(unique),
@@ -264,7 +313,13 @@ def register_tools(mcp: FastMCP, sandbox: SandboxManager) -> None:
                 {"id": r["id"], "title": r["title"], "severity": r.get("severity", "info")}
                 for r in unique
             ],
-        })
+        }
+        if scan_dir:
+            _write_report(scan_dir, summary)
+
+        await sandbox.end_scan()
+
+        return json.dumps(summary)
 
     @mcp.tool()
     async def register_agent(task_name: str = "") -> str:
@@ -340,6 +395,8 @@ def register_tools(mcp: FastMCP, sandbox: SandboxManager) -> None:
             if cvss_score is not None and (existing.get("cvss_score") is None or cvss_score > existing["cvss_score"]):
                 existing["cvss_score"] = cvss_score
             existing["content"] += f"\n\n---\n\n**Additional evidence:**\n{content}"
+            if scan_dir:
+                _append_finding(scan_dir, existing, event="merge")
             return json.dumps({
                 "report_id": existing["id"],
                 "title": existing["title"],
@@ -360,6 +417,8 @@ def register_tools(mcp: FastMCP, sandbox: SandboxManager) -> None:
         if cvss_score is not None:
             report["cvss_score"] = cvss_score
         vulnerability_reports.append(report)
+        if scan_dir:
+            _append_finding(scan_dir, report)
         return json.dumps({
             "report_id": report["id"],
             "title": title,

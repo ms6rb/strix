@@ -1,6 +1,8 @@
 """Unit tests for MCP tools (no Docker required)."""
 import json
+import tempfile
 from datetime import UTC, datetime
+from pathlib import Path
 
 from strix_mcp.sandbox import ScanState
 
@@ -86,7 +88,57 @@ class TestConcurrentProbing:
         assert len(PROBE_PATHS) == len(set(PROBE_PATHS))
 
 
-from strix_mcp.tools import _normalize_title, _find_duplicate, _categorize_owasp, _deduplicate_reports
+from strix_mcp.tools import _normalize_title, _find_duplicate, _categorize_owasp, _deduplicate_reports, _write_scan_meta, _append_finding, _write_report
+
+
+class TestScanPersistence:
+    def test_write_scan_meta_creates_file(self):
+        """_write_scan_meta should create scan_meta.json in scan_dir."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            scan_dir = Path(tmpdir) / "test-scan"
+            _write_scan_meta(scan_dir, "test-scan", [{"type": "web_application", "value": "http://example.com"}], {"runtime": ["node"]})
+            meta_path = scan_dir / "scan_meta.json"
+            assert meta_path.exists()
+            meta = json.loads(meta_path.read_text())
+            assert meta["scan_id"] == "test-scan"
+            assert meta["targets"][0]["value"] == "http://example.com"
+            assert meta["detected_stack"]["runtime"] == ["node"]
+
+    def test_append_finding_creates_jsonl(self):
+        """_append_finding should append a report as a JSON line with event type."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            scan_dir = Path(tmpdir)
+            report = {"id": "vuln-abc", "title": "XSS", "severity": "high", "content": "found xss"}
+            _append_finding(scan_dir, report)
+            _append_finding(scan_dir, {"id": "vuln-def", "title": "SQLi", "severity": "critical", "content": "sqli"})
+            findings_path = scan_dir / "findings.jsonl"
+            assert findings_path.exists()
+            lines = findings_path.read_text().strip().splitlines()
+            assert len(lines) == 2
+            first = json.loads(lines[0])
+            assert first["id"] == "vuln-abc"
+            assert first["event"] == "new"
+
+    def test_append_finding_merge_event(self):
+        """_append_finding with event='merge' should tag the entry accordingly."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            scan_dir = Path(tmpdir)
+            report = {"id": "vuln-abc", "title": "XSS", "severity": "high", "content": "merged evidence"}
+            _append_finding(scan_dir, report, event="merge")
+            line = json.loads((scan_dir / "findings.jsonl").read_text().strip())
+            assert line["event"] == "merge"
+            assert line["id"] == "vuln-abc"
+
+    def test_write_report_creates_summary(self):
+        """_write_report should write the final report.json."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            scan_dir = Path(tmpdir)
+            summary = {"unique_findings": 2, "severity_counts": {"high": 1, "critical": 1}}
+            _write_report(scan_dir, summary)
+            report_path = scan_dir / "report.json"
+            assert report_path.exists()
+            data = json.loads(report_path.read_text())
+            assert data["unique_findings"] == 2
 
 
 class TestTitleNormalization:
