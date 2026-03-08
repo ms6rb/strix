@@ -57,126 +57,147 @@ _AGENT_TEMPLATES: list[dict[str, Any]] = [
         "modules": ["authentication_jwt"],
         "priority": "high",
         "triggers": ["always"],
+        "signal_strength": "generic",
     },
     {
         "task": "Test authorization, IDOR, and access control",
         "modules": ["idor", "broken_function_level_authorization"],
         "priority": "high",
         "triggers": ["always"],
+        "signal_strength": "generic",
     },
     {
         "task": "Test business logic and mass assignment",
         "modules": ["business_logic", "mass_assignment"],
         "priority": "high",
         "triggers": ["always"],
+        "signal_strength": "generic",
     },
     {
         "task": "Test injection vectors (SQLi, XSS, SSRF, XXE)",
         "modules": ["sql_injection", "xss", "ssrf", "xxe"],
         "priority": "medium",
         "triggers": ["web_app"],
+        "signal_strength": "generic",
     },
     {
         "task": "Test file uploads and path traversal",
         "modules": ["insecure_file_uploads", "path_traversal_lfi_rfi"],
         "priority": "medium",
         "triggers": ["file_upload"],
+        "signal_strength": "specific",
     },
     {
         "task": "Test race conditions and CSRF",
         "modules": ["race_conditions", "csrf"],
         "priority": "medium",
         "triggers": ["web_app"],
+        "signal_strength": "generic",
     },
     {
         "task": "Test RCE vectors",
         "modules": ["rce"],
         "priority": "medium",
         "triggers": ["web_app"],
+        "signal_strength": "generic",
     },
     {
         "task": "Test FastAPI-specific vulnerabilities (dependency injection, Pydantic bypass, middleware issues)",
         "modules": ["fastapi"],
         "priority": "high",
         "triggers": ["fastapi"],
+        "signal_strength": "specific",
     },
     {
         "task": "Test Next.js-specific vulnerabilities (SSR injection, API routes, middleware bypass)",
         "modules": ["nextjs"],
         "priority": "high",
         "triggers": ["nextjs"],
+        "signal_strength": "specific",
     },
     {
         "task": "Test GraphQL-specific vulnerabilities",
         "modules": ["graphql", "idor"],
         "priority": "high",
         "triggers": ["graphql"],
+        "signal_strength": "specific",
     },
     {
         "task": "Test Firebase/Firestore security rules",
         "modules": ["firebase_firestore"],
         "priority": "high",
         "triggers": ["firebase"],
+        "signal_strength": "specific",
     },
     {
         "task": "Test Supabase RLS and auth",
         "modules": ["supabase"],
         "priority": "high",
         "triggers": ["supabase"],
+        "signal_strength": "specific",
     },
     {
         "task": "Test NestJS-specific vulnerabilities (guard bypass, validation pipes, module boundaries, cross-transport auth)",
         "modules": ["nestjs", "mass_assignment"],
         "priority": "high",
         "triggers": ["nestjs"],
+        "signal_strength": "specific",
     },
     {
         "task": "Test information disclosure, security headers, and open redirects",
         "modules": ["information_disclosure", "open_redirect"],
         "priority": "medium",
         "triggers": ["web_app"],
+        "signal_strength": "generic",
     },
     {
         "task": "Test path traversal and file inclusion (LFI/RFI)",
         "modules": ["path_traversal_lfi_rfi"],
         "priority": "medium",
         "triggers": ["web_app"],
+        "signal_strength": "generic",
     },
     {
         "task": "Test subdomain takeover vulnerabilities",
         "modules": ["subdomain_takeover"],
         "priority": "medium",
         "triggers": ["domain"],
+        "signal_strength": "specific",
     },
     {
         "task": "Test Django-specific vulnerabilities (ORM injection, CSRF bypass, template injection, admin panel, serialization)",
         "modules": ["csrf", "mass_assignment", "authentication_jwt", "sql_injection"],
         "priority": "high",
         "triggers": ["django"],
+        "signal_strength": "specific",
     },
     {
         "task": "Test WordPress-specific vulnerabilities (plugin/theme exploits, SQLi, XSS, auth bypass, file upload abuse)",
         "modules": ["xss", "sql_injection", "authentication_jwt", "path_traversal_lfi_rfi", "insecure_file_uploads"],
         "priority": "high",
         "triggers": ["wordpress"],
+        "signal_strength": "specific",
     },
     {
         "task": "Test Laravel-specific vulnerabilities (mass assignment, CSRF bypass, Eloquent injection, debug mode exposure)",
         "modules": ["csrf", "mass_assignment", "sql_injection", "information_disclosure"],
         "priority": "high",
         "triggers": ["laravel"],
+        "signal_strength": "specific",
     },
     {
         "task": "Test Rails-specific vulnerabilities (mass assignment, CSRF bypass, ActiveRecord injection, deserialization)",
         "modules": ["csrf", "mass_assignment", "sql_injection"],
         "priority": "high",
         "triggers": ["rails"],
+        "signal_strength": "specific",
     },
     {
         "task": "Test Express.js-specific vulnerabilities (middleware bypass, prototype pollution, NoSQL injection, session handling)",
         "modules": ["authentication_jwt", "mass_assignment", "business_logic"],
         "priority": "high",
         "triggers": ["express"],
+        "signal_strength": "specific",
     },
 ]
 
@@ -256,18 +277,26 @@ def detect_stack(signals: dict[str, str]) -> dict[str, Any]:
 # ---------------------------------------------------------------------------
 # generate_plan
 # ---------------------------------------------------------------------------
-def generate_plan(stack: dict[str, Any]) -> list[dict[str, Any]]:
+# Triggers that are only reliable when confirmed by HTTP probes
+_PROBE_CONFIRMED_TRIGGERS = {"graphql", "swagger", "file_upload", "spring_actuator",
+                              "env_exposed", "wordpress_admin", "nextjs_data"}
+
+
+def generate_plan(
+    stack: dict[str, Any],
+    probe_results: str | None = None,
+) -> list[dict[str, Any]]:
     """Generate a list of agent assignments from a detected stack.
 
     Parameters
     ----------
     stack:
-        Output of :func:`detect_stack`.
-
-    Returns
-    -------
-    List of dicts, each with ``task`` (str), ``modules`` (list[str]),
-    and ``priority`` (str).
+        Output of :func:`detect_stack` or :func:`detect_stack_from_http`.
+    probe_results:
+        Raw probe results string (e.g. "/graphql: 200\\n/.env: 404").
+        When provided, used to verify probe-dependent detections.
+        When empty string, probe-dependent templates are downgraded to low confidence.
+        When None (default), probe status is unknown — no downgrade applied.
     """
     # Build active triggers
     active_triggers: set[str] = {"always", "web_app"}
@@ -275,6 +304,9 @@ def generate_plan(stack: dict[str, Any]) -> list[dict[str, Any]]:
         active_triggers.update(stack.get(key, []))
     # Include target-type triggers passed through stack metadata
     active_triggers.update(stack.get("target_types", []))
+
+    # Determine if probes were stale
+    probes_were_stale = probe_results is not None and not probe_results.strip()
 
     # Build the set of all recommended modules from active triggers
     recommended_modules: set[str] = set()
@@ -292,10 +324,22 @@ def generate_plan(stack: dict[str, Any]) -> list[dict[str, Any]]:
         if not filtered_modules:
             continue
 
+        # Determine confidence
+        if template.get("signal_strength") == "specific":
+            # Check if any trigger depends on probe confirmation
+            probe_dependent = any(t in _PROBE_CONFIRMED_TRIGGERS for t in template["triggers"])
+            if probe_dependent and probes_were_stale:
+                confidence = "low"
+            else:
+                confidence = "high"
+        else:
+            confidence = "medium"
+
         plan.append({
             "task": template["task"],
             "modules": filtered_modules,
             "priority": template["priority"],
+            "confidence": confidence,
         })
 
     return plan

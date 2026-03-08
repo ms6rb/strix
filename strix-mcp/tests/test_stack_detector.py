@@ -242,6 +242,68 @@ class TestDetectStackFromHttp:
         assert "swagger" in stack["features"]
 
 
+class TestPlanConfidence:
+    def test_plan_entries_have_confidence(self):
+        """Every plan entry should include a confidence field."""
+        stack = {
+            "runtime": ["node"], "framework": ["nestjs"], "database": ["sql"],
+            "auth": ["jwt"], "features": [], "api_style": ["rest"],
+            "infrastructure": [],
+        }
+        plan = generate_plan(stack)
+        for entry in plan:
+            assert "confidence" in entry, f"Entry missing 'confidence': {entry}"
+            assert entry["confidence"] in ("high", "medium", "low")
+
+    def test_generic_triggers_are_medium_confidence(self):
+        """Templates triggered only by 'always' or 'web_app' (generic) should be medium confidence."""
+        # Empty stack — only 'always' and 'web_app' triggers fire
+        stack = detect_stack(EMPTY_SIGNALS)
+        plan = generate_plan(stack)
+        for entry in plan:
+            assert entry["confidence"] == "medium", f"Expected medium for generic trigger: {entry}"
+
+    def test_framework_trigger_is_high_confidence(self):
+        """Templates triggered by specific framework should be high confidence."""
+        stack = {
+            "runtime": ["node"], "framework": ["nestjs"], "database": [],
+            "auth": [], "features": [], "api_style": ["rest"],
+            "infrastructure": [],
+        }
+        plan = generate_plan(stack)
+        nestjs_entries = [e for e in plan if "NestJS" in e["task"]]
+        assert len(nestjs_entries) > 0
+        for entry in nestjs_entries:
+            assert entry["confidence"] == "high"
+
+    def test_stale_probes_downgrade_confidence(self):
+        """When probe_results are empty (stale/failed probes), HTTP-detected features should be low confidence."""
+        # Stack detected from HTTP but probes returned nothing useful
+        stack = {
+            "runtime": ["node"], "framework": ["express"], "database": [],
+            "auth": [], "features": ["graphql"], "api_style": ["graphql"],
+            "infrastructure": [],
+        }
+        # Pass empty probe_results — signals were stale/timed out
+        plan = generate_plan(stack, probe_results="")
+        graphql_entries = [e for e in plan if "GraphQL" in e["task"]]
+        assert len(graphql_entries) > 0
+        for entry in graphql_entries:
+            assert entry["confidence"] == "low", f"Stale probe should downgrade to low: {entry}"
+
+    def test_successful_probes_keep_high_confidence(self):
+        """When probe_results confirm features, confidence stays high."""
+        stack = {
+            "runtime": ["node"], "framework": ["express"], "database": [],
+            "auth": [], "features": ["graphql"], "api_style": ["graphql"],
+            "infrastructure": [],
+        }
+        plan = generate_plan(stack, probe_results="/graphql: 200")
+        graphql_entries = [e for e in plan if "GraphQL" in e["task"]]
+        for entry in graphql_entries:
+            assert entry["confidence"] == "high"
+
+
 class TestGeneratePlanNewTemplates:
     def test_nestjs_triggers_nestjs_agent(self):
         stack = {
