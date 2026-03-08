@@ -864,10 +864,11 @@ def _probe_has_status(probes: str, path: str, status: str = "200") -> bool:
     """Check if a specific probe path returned the given status code.
 
     Probe results are formatted as '/path: status_code' per line.
-    This avoids false positives from checking status globally.
+    Uses exact path matching to avoid substring false positives.
     """
     for line in probes.splitlines():
-        if path in line and f": {status}" in line:
+        parts = line.split(": ", 1)
+        if len(parts) == 2 and parts[0].strip() == path and parts[1].strip() == status:
             return True
     return False
 

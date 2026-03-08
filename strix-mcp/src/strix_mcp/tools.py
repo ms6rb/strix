@@ -121,19 +121,27 @@ def _categorize_owasp(title: str) -> str:
     return "Other"
 
 
+_SEVERITY_ORDER = ["info", "low", "medium", "high", "critical"]
+
+
+def _normalize_severity(severity: str) -> str:
+    """Normalize severity to a known value, defaulting to 'info'."""
+    normed = severity.lower().strip() if severity else "info"
+    return normed if normed in _SEVERITY_ORDER else "info"
+
+
 def _deduplicate_reports(
     reports: list[dict[str, Any]],
 ) -> list[dict[str, Any]]:
     """Deduplicate reports by normalized title, keeping the richest entry."""
-    severity_order = ["info", "low", "medium", "high", "critical"]
     seen: dict[str, dict[str, Any]] = {}
 
     for report in reports:
         key = _normalize_title(report["title"])
         if key in seen:
             existing = seen[key]
-            if severity_order.index(report.get("severity", "info")) > severity_order.index(existing.get("severity", "info")):
-                existing["severity"] = report["severity"]
+            if _SEVERITY_ORDER.index(_normalize_severity(report.get("severity", "info"))) > _SEVERITY_ORDER.index(_normalize_severity(existing.get("severity", "info"))):
+                existing["severity"] = _normalize_severity(report["severity"])
             if report.get("content", "") not in existing.get("content", ""):
                 existing["content"] = existing.get("content", "") + f"\n\n---\n\n{report.get('content', '')}"
         else:
@@ -438,13 +446,13 @@ def register_tools(mcp: FastMCP, sandbox: SandboxManager) -> None:
         cvss_score: CVSS 3.1 base score (0.0-10.0)
 
         Only report validated vulnerabilities with proof of exploitation."""
+        severity = _normalize_severity(severity)
         normalized = _normalize_title(title)
         dup_idx = _find_duplicate(normalized, vulnerability_reports)
 
         if dup_idx is not None:
             existing = vulnerability_reports[dup_idx]
-            severity_order = ["info", "low", "medium", "high", "critical"]
-            if severity_order.index(severity) > severity_order.index(existing["severity"]):
+            if _SEVERITY_ORDER.index(severity) > _SEVERITY_ORDER.index(_normalize_severity(existing["severity"])):
                 existing["severity"] = severity
             if affected_endpoint and affected_endpoint not in existing.get("affected_endpoints", []):
                 existing.setdefault("affected_endpoints", []).append(affected_endpoint)
@@ -473,7 +481,7 @@ def register_tools(mcp: FastMCP, sandbox: SandboxManager) -> None:
             "id": f"vuln-{uuid.uuid4().hex[:8]}",
             "title": title,
             "content": content,
-            "severity": severity,
+            "severity": severity,  # already normalized above
             "timestamp": datetime.now(UTC).isoformat(),
         }
         if affected_endpoint:
@@ -535,7 +543,8 @@ def register_tools(mcp: FastMCP, sandbox: SandboxManager) -> None:
         if scan_dir is None:
             return json.dumps({"error": "No active scan."})
 
-        vuln_file = scan_dir / "vulnerabilities" / f"{finding_id}.md"
+        safe_id = Path(finding_id).name  # strip directory components
+        vuln_file = scan_dir / "vulnerabilities" / f"{safe_id}.md"
         if not vuln_file.exists():
             return json.dumps({"error": f"Finding '{finding_id}' not found."})
 
@@ -610,9 +619,9 @@ def register_tools(mcp: FastMCP, sandbox: SandboxManager) -> None:
         all_chains = detect_chains(vulnerability_reports, fired=set())
 
         for chain in all_chains:
-            chain["dispatched"] = chain["chain_name"] in fired_chains
+            chain["previously_surfaced"] = chain["chain_name"] in fired_chains
 
-        new_count = sum(1 for c in all_chains if not c["dispatched"])
+        new_count = sum(1 for c in all_chains if not c["previously_surfaced"])
         return json.dumps({
             "total_chains": len(all_chains),
             "new_chains": new_count,
