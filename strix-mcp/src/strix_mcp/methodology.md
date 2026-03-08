@@ -74,7 +74,7 @@ Call the `get_module` tool for each of these modules and read the full content c
 ### Step 2: Dispatch Subagents (Phase 1 — Broad Sweep)
 
 **Dispatching agents:**
-For each agent in the plan, call `dispatch_agent(task=..., modules=[...])`. It handles agent registration and returns a complete prompt — pass the `prompt` field directly to the Agent tool. This replaces the manual `register_agent` + prompt composition workflow.
+For each agent in the plan, call `dispatch_agent(task=..., modules=[...])`. It handles agent registration and returns a complete prompt — pass the `prompt` field directly to the Agent tool.
 
 For chain agents, pass `chain_context` with the two findings to include Phase 1 context in the prompt.
 

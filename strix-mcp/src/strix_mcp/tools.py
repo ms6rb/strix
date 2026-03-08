@@ -245,17 +245,21 @@ def register_tools(mcp: FastMCP, sandbox: SandboxManager) -> None:
         targets: list[dict[str, str]],
         scan_id: str | None = None,
     ) -> str:
-        """Start a security scan. Boots a Docker sandbox with Kali Linux,
-        copies target source code to /workspace, and initializes security tools.
+        """Boot a Docker sandbox and initialize a security scan.
 
-        targets: list of {type, value} where type is one of: local_code,
-        web_application, repository, ip_address, domain.
-        value is the path or URL. Optionally include 'name' for local_code targets.
+        targets: list of dicts with keys:
+            type: local_code | web_application | repository | ip_address | domain
+            value: file path, URL, or address
+            name: (optional) label for local_code targets
 
-        First run will pull the Docker image (~2GB) which takes a few minutes.
-        Subsequent runs reuse the cached image.
+        Detects the target's tech stack (frameworks, databases, auth, features) and
+        generates a recommended scan plan with module assignments. For web targets,
+        fingerprints via HTTP headers, cookies, and common paths.
 
-        Returns detected tech stack and recommended scan plan with module assignments."""
+        First run pulls the Docker image (~2GB). Subsequent runs reuse the cached image.
+
+        Returns: scan_id, detected_stack, recommended_plan, workspace path.
+        If a Swagger/OpenAPI spec is found, returns openapi_spec with endpoint list."""
         sid = scan_id or f"scan-{uuid.uuid4().hex[:8]}"
         state = await sandbox.start_scan(targets=targets, scan_id=sid)
 
@@ -321,9 +325,13 @@ def register_tools(mcp: FastMCP, sandbox: SandboxManager) -> None:
 
     @mcp.tool()
     async def end_scan() -> str:
-        """End the active scan and tear down the Docker sandbox.
-        Returns a comprehensive summary: unique findings deduplicated,
-        grouped by OWASP Top 10 category, with severity breakdown."""
+        """Tear down the Docker sandbox and return a scan summary.
+
+        Deduplicates findings by normalized title (higher severity wins on merge),
+        groups by OWASP Top 10 (2021) category, and writes results to disk
+        at strix_runs/<scan_id>/ (vulnerabilities/*.md, vulnerabilities.csv, summary.md).
+
+        Returns: unique_findings count, severity_counts, findings_by_category."""
         unique = _deduplicate_reports(vulnerability_reports)
         total_filed = len(vulnerability_reports)
         duplicates_merged = total_filed - len(unique)
@@ -371,25 +379,11 @@ def register_tools(mcp: FastMCP, sandbox: SandboxManager) -> None:
         return json.dumps(summary)
 
     @mcp.tool()
-    async def register_agent(task_name: str = "") -> str:
-        """Register a new agent ID for concurrent subagent testing.
-        Call this at the start of each Claude Code subagent's work.
-        Pass the returned agent_id to all subsequent tool calls.
-        Each agent gets isolated terminal, browser, and Python sessions.
-
-        task_name: optional label for what this agent is testing (e.g. 'SQL injection testing')."""
-        agent_id = await sandbox.register_agent(task_name=task_name)
-        return json.dumps({
-            "agent_id": agent_id,
-            "task_name": task_name,
-            "message": f"Agent registered. Pass agent_id='{agent_id}' to all tool calls.",
-        })
-
-    @mcp.tool()
     async def get_scan_status() -> str:
-        """Get current scan status including elapsed time, registered agents,
-        and vulnerability report counts by severity.
-        Use this to monitor scan progress."""
+        """Get current scan progress: elapsed time, registered agents, vulnerability
+        counts by severity, and pending chain opportunities.
+
+        Returns: scan_id, status, elapsed_seconds, agents list, severity_counts, pending_chains count."""
         scan = sandbox.active_scan
         if scan is None:
             return json.dumps({"status": "no_active_scan"})
@@ -427,15 +421,17 @@ def register_tools(mcp: FastMCP, sandbox: SandboxManager) -> None:
         affected_endpoint: str | None = None,
         cvss_score: float | None = None,
     ) -> str:
-        """Report a confirmed vulnerability finding.
-        severity: critical, high, medium, low, or info.
-        content: full details including PoC, impact, and remediation.
-        affected_endpoint: the URL path or component affected (e.g. /api/users/:id).
-        cvss_score: CVSS 3.1 base score (0.0-10.0) if known.
-        Only report validated vulnerabilities with proof of exploitation.
+        """File a confirmed vulnerability finding. Automatically deduplicates — if a
+        similar finding exists, evidence is merged and the higher severity is kept.
+        Also triggers automatic chain detection across all findings.
 
-        If a similar finding was already reported, the evidence is merged
-        into the existing report and the higher severity is kept."""
+        title: vulnerability name (e.g. "SQL Injection in /api/users")
+        content: full details including proof of exploitation, impact, and remediation
+        severity: critical | high | medium | low | info
+        affected_endpoint: URL path or component affected (e.g. "/api/users/:id")
+        cvss_score: CVSS 3.1 base score (0.0-10.0)
+
+        Only report validated vulnerabilities with proof of exploitation."""
         normalized = _normalize_title(title)
         dup_idx = _find_duplicate(normalized, vulnerability_reports)
 
@@ -499,9 +495,12 @@ def register_tools(mcp: FastMCP, sandbox: SandboxManager) -> None:
 
     @mcp.tool()
     async def list_vulnerability_reports(severity: str | None = None) -> str:
-        """List all vulnerability reports filed so far in the current scan.
-        Use this BEFORE filing a new report to check what's already been reported
-        and avoid duplicates. Optional severity filter: critical, high, medium, low, info."""
+        """List all vulnerability reports filed in the current scan (summaries only).
+        Check this before filing a new report to avoid duplicates.
+
+        severity: optional filter — critical | high | medium | low | info
+
+        Returns: list of {id, title, severity, affected_endpoints, cvss_score}."""
         if severity:
             filtered = [r for r in vulnerability_reports if r["severity"] == severity]
         else:
@@ -522,10 +521,11 @@ def register_tools(mcp: FastMCP, sandbox: SandboxManager) -> None:
 
     @mcp.tool()
     async def get_finding(finding_id: str) -> str:
-        """Read the full details of a specific vulnerability finding from disk.
-        Use this to recall finding details without keeping all content in memory.
+        """Read the full markdown details of a specific vulnerability finding from disk.
 
-        finding_id: the report ID (e.g. 'vuln-a1b2c3d4')."""
+        finding_id: the report ID (e.g. "vuln-a1b2c3d4") from list_vulnerability_reports.
+
+        Returns the raw markdown content from strix_runs/<scan_id>/vulnerabilities/<id>.md."""
         if scan_dir is None:
             return json.dumps({"error": "No active scan."})
 
@@ -537,29 +537,23 @@ def register_tools(mcp: FastMCP, sandbox: SandboxManager) -> None:
 
     @mcp.tool()
     async def get_module(name: str) -> str:
-        """Load a specialized security knowledge module by name.
-        Each module contains advanced exploitation techniques, bypass methods,
-        validation requirements, and pro tips for a specific vulnerability class
-        or technology.
+        """Load a security knowledge module by name. Modules contain exploitation
+        techniques, bypass methods, validation requirements, and remediation guidance
+        for a specific vulnerability class or technology.
 
-        Call this at the START of your testing work to load deep expertise
-        before analyzing code or running tests.
+        name: module name (e.g. "idor", "sql_injection", "authentication_jwt", "nextjs", "graphql")
 
-        Examples: get_module("idor"), get_module("authentication_jwt"),
-        get_module("fastapi")"""
+        Load relevant modules at the START of testing work before analyzing code or running tests."""
         from . import resources
         return resources.get_module(name)
 
     @mcp.tool()
     async def list_modules(category: str | None = None) -> str:
-        """List all available security knowledge modules with their categories
-        and descriptions. Call this to see what modules you can load with
-        get_module().
+        """List all available security knowledge modules with categories and descriptions.
 
-        Optional category filter to show only modules in a specific category
-        (e.g. 'vulnerabilities', 'frameworks', 'technologies').
+        category: optional filter (e.g. "vulnerabilities", "frameworks", "technologies", "protocols")
 
-        Returns JSON mapping module names to {category, description}."""
+        Returns: JSON mapping module_name -> {category, description}."""
         from . import resources
         return resources.list_modules(category=category)
 
@@ -570,15 +564,16 @@ def register_tools(mcp: FastMCP, sandbox: SandboxManager) -> None:
         is_web_only: bool = False,
         chain_context: dict[str, str] | None = None,
     ) -> str:
-        """Register a new agent and return a ready-to-use prompt for the Agent tool.
+        """Register a new subagent and return a ready-to-use prompt for the Agent tool.
+        Handles agent registration internally — pass the returned prompt directly to
+        the Agent tool to dispatch.
 
-        This simplifies agent dispatch: instead of calling register_agent + manually
-        composing a prompt, call this once and pass the returned prompt to the Agent tool.
+        task: what the agent should test (e.g. "Test IDOR and access control on /api/users")
+        modules: knowledge modules the agent should load (e.g. ["idor", "authentication_jwt"])
+        is_web_only: true for live web targets with no source code in /workspace
+        chain_context: for Phase 2 chain agents — dict with keys: finding_a, finding_b, chain_name
 
-        task: what the agent should test (e.g. 'Test IDOR and access control')
-        modules: list of module names the agent should load (e.g. ['idor', 'authentication_jwt'])
-        is_web_only: set True for web-only targets (no source code in /workspace)
-        chain_context: optional dict with 'finding_a', 'finding_b', 'chain_name' for Phase 2 chain agents"""
+        Returns: agent_id, prompt (pass prompt to Agent tool)."""
         from .chaining import build_agent_prompt
 
         agent_id = await sandbox.register_agent(task_name=task)
@@ -596,14 +591,13 @@ def register_tools(mcp: FastMCP, sandbox: SandboxManager) -> None:
 
     @mcp.tool()
     async def suggest_chains() -> str:
-        """Analyze all vulnerability reports for chaining opportunities.
+        """Review all vulnerability chaining opportunities detected so far.
+        Call after Phase 1 completes to find attack chains across findings.
 
-        Returns all detected chains — both new (not yet dispatched) and
-        previously fired. Use this after Phase 1 completes to review
-        all potential attack chains.
+        Each chain combines two findings into a higher-severity exploit path
+        and includes a ready-to-use dispatch payload (task + modules) for dispatch_agent.
 
-        Each chain includes a dispatch payload with task and modules
-        that can be passed directly to dispatch_agent."""
+        Returns: total_chains, new_chains count, chains list with dispatch payloads."""
         from .chaining import detect_chains
 
         # Run detection without modifying fired set (show everything)
@@ -630,11 +624,14 @@ def register_tools(mcp: FastMCP, sandbox: SandboxManager) -> None:
         no_enter: bool = False,
         agent_id: str | None = None,
     ) -> str:
-        """Execute a bash command in a persistent Kali Linux terminal session.
-        The terminal maintains state (env vars, cwd, processes) between calls.
-        Use different terminal_id values for concurrent sessions.
-        Timeout capped at 60s; commands keep running in background after timeout.
-        Use C-c to interrupt. Use is_input=true for input to running processes."""
+        """Execute a shell command in a persistent Kali Linux terminal session.
+
+        command: the shell command to execute
+        timeout: max seconds to wait for output (default 30, capped at 60). Command continues in background after timeout.
+        terminal_id: identifier for persistent terminal session (default "default"). Use different IDs for concurrent sessions.
+        is_input: if true, send as input to a running process instead of a new command
+        no_enter: if true, send the command without pressing Enter
+        agent_id: subagent identifier from dispatch_agent (omit for coordinator)"""
         result = await sandbox.proxy_tool("terminal_execute", {
             "command": command,
             "timeout": timeout,
@@ -654,8 +651,14 @@ def register_tools(mcp: FastMCP, sandbox: SandboxManager) -> None:
         timeout: int = 30,
         agent_id: str | None = None,
     ) -> str:
-        """Send an HTTP request through the Caido proxy.
-        All traffic is captured for later analysis with list_requests/view_request."""
+        """Send an HTTP request through the Caido proxy. All traffic is captured for analysis with list_requests and view_request.
+
+        method: HTTP method (GET, POST, PUT, DELETE, PATCH, etc.)
+        url: full URL including scheme (e.g. "https://target.com/api/users")
+        headers: HTTP headers dict
+        body: request body string
+        timeout: max seconds to wait for response (default 30)
+        agent_id: subagent identifier from dispatch_agent (omit for coordinator)"""
         result = await sandbox.proxy_tool("send_request", {
             "method": method,
             "url": url,
@@ -672,9 +675,13 @@ def register_tools(mcp: FastMCP, sandbox: SandboxManager) -> None:
         modifications: dict[str, Any] | None = None,
         agent_id: str | None = None,
     ) -> str:
-        """Repeat a captured proxy request with modifications for pentesting.
-        Workflow: browse with browser_action -> list_requests -> repeat_request.
-        modifications can include: url, params, headers, body, cookies."""
+        """Replay a captured proxy request with optional modifications.
+
+        request_id: the request ID from list_requests
+        modifications: dict with optional keys — url (str), params (dict), headers (dict), body (str), cookies (dict)
+        agent_id: subagent identifier from dispatch_agent (omit for coordinator)
+
+        Typical workflow: browse with browser_action -> list_requests -> repeat_request with modifications."""
         result = await sandbox.proxy_tool("repeat_request", {
             "request_id": request_id,
             "modifications": modifications,
@@ -693,9 +700,13 @@ def register_tools(mcp: FastMCP, sandbox: SandboxManager) -> None:
         scope_id: str | None = None,
         agent_id: str | None = None,
     ) -> str:
-        """List and filter captured proxy requests using HTTPQL syntax.
-        Filter examples: req.method.eq:"POST", resp.code.gte:400,
-        req.path.regex:"/api/.*", req.host.regex:".*example.com"."""
+        """List captured proxy requests with optional HTTPQL filtering.
+
+        httpql_filter: HTTPQL query (e.g. 'req.method.eq:"POST"', 'resp.code.gte:400',
+                       'req.path.regex:"/api/.*"', 'req.host.regex:".*example.com"')
+        sort_by: timestamp | host | method | path | status_code | response_time | response_size | source
+        sort_order: asc | desc
+        agent_id: subagent identifier from dispatch_agent (omit for coordinator)"""
         result = await sandbox.proxy_tool("list_requests", {
             "httpql_filter": httpql_filter,
             "start_page": start_page,
@@ -716,8 +727,13 @@ def register_tools(mcp: FastMCP, sandbox: SandboxManager) -> None:
         page: int | None = None,
         agent_id: str | None = None,
     ) -> str:
-        """View detailed request/response data from proxy traffic.
-        part: 'request' or 'response'. Use search_pattern for regex matching."""
+        """View detailed request or response data from captured proxy traffic.
+
+        request_id: the request ID from list_requests
+        part: request | response (default: request)
+        search_pattern: regex pattern to highlight matches in the content
+        page: page number for paginated responses
+        agent_id: subagent identifier from dispatch_agent (omit for coordinator)"""
         result = await sandbox.proxy_tool("view_request", {
             "request_id": request_id,
             "part": part,
@@ -742,10 +758,21 @@ def register_tools(mcp: FastMCP, sandbox: SandboxManager) -> None:
         agent_id: str | None = None,
     ) -> Sequence[types.TextContent | types.ImageContent]:
         """Control a Playwright browser in the sandbox. Returns a screenshot after each action.
-        Actions: launch, goto, click, type, double_click, hover, scroll_up, scroll_down,
-        press_key, execute_js, wait, back, forward, new_tab, switch_tab, close_tab,
-        list_tabs, save_pdf, get_console_logs, view_source, close.
-        Click coordinates must be derived from the most recent screenshot.
+
+        action: launch | goto | click | type | double_click | hover | scroll_up | scroll_down |
+                press_key | execute_js | wait | back | forward | new_tab | switch_tab | close_tab |
+                list_tabs | save_pdf | get_console_logs | view_source | close
+        url: URL for goto/new_tab actions
+        coordinate: "x,y" string for click/double_click/hover (derive from most recent screenshot)
+        text: text to type for the type action
+        js_code: JavaScript code for execute_js action
+        tab_id: tab identifier for switch_tab/close_tab
+        duration: seconds to wait for the wait action
+        key: key name for press_key (e.g. "Enter", "Tab", "Escape")
+        file_path: output path for save_pdf
+        clear: if true, clear console log buffer (for get_console_logs)
+        agent_id: subagent identifier from dispatch_agent (omit for coordinator)
+
         Start with 'launch', end with 'close'."""
         kwargs: dict[str, Any] = {"action": action}
         if url is not None:
@@ -805,10 +832,16 @@ def register_tools(mcp: FastMCP, sandbox: SandboxManager) -> None:
         agent_id: str | None = None,
     ) -> str:
         """Run Python code in a persistent interpreter session inside the sandbox.
-        Actions: new_session, execute, close, list_sessions.
-        Proxy functions (list_requests, send_request, etc.) are pre-imported.
+
+        action: new_session | execute | close | list_sessions
+        code: Python code to execute (required for 'execute' action)
+        timeout: max seconds for execution (default 30)
+        session_id: session identifier (returned by new_session, required for execute/close)
+        agent_id: subagent identifier from dispatch_agent (omit for coordinator)
+
+        Proxy functions (send_request, list_requests, etc.) are pre-imported.
         Sessions maintain state (variables, imports) between calls.
-        Must start with 'new_session' before using 'execute'."""
+        Must call 'new_session' before using 'execute'."""
         kwargs: dict[str, Any] = {"action": action, "timeout": timeout}
         if code is not None:
             kwargs["code"] = code
@@ -825,7 +858,11 @@ def register_tools(mcp: FastMCP, sandbox: SandboxManager) -> None:
         depth: int = 3,
         agent_id: str | None = None,
     ) -> str:
-        """List files in the sandbox workspace recursively."""
+        """List files and directories in the sandbox workspace.
+
+        directory_path: path to list (default "/workspace")
+        depth: max recursion depth (default 3)
+        agent_id: subagent identifier from dispatch_agent (omit for coordinator)"""
         result = await sandbox.proxy_tool("list_files", {
             "directory_path": directory_path,
             "depth": depth,
@@ -840,7 +877,12 @@ def register_tools(mcp: FastMCP, sandbox: SandboxManager) -> None:
         search_pattern: str | None = None,
         agent_id: str | None = None,
     ) -> str:
-        """Search file contents in the sandbox workspace by name pattern or content regex."""
+        """Search file contents in the sandbox workspace.
+
+        directory_path: directory to search in
+        file_pattern: glob pattern for file names (e.g. "*.py", "*.js")
+        search_pattern: regex pattern to match in file contents
+        agent_id: subagent identifier from dispatch_agent (omit for coordinator)"""
         result = await sandbox.proxy_tool("search_files", {
             "directory_path": directory_path,
             "file_pattern": file_pattern,
@@ -856,7 +898,12 @@ def register_tools(mcp: FastMCP, sandbox: SandboxManager) -> None:
         new_str: str,
         agent_id: str | None = None,
     ) -> str:
-        """Edit a file in the sandbox by replacing a text string."""
+        """Edit a file in the sandbox by replacing an exact text match.
+
+        file_path: path to the file in the sandbox
+        old_str: exact string to find and replace
+        new_str: replacement string
+        agent_id: subagent identifier from dispatch_agent (omit for coordinator)"""
         result = await sandbox.proxy_tool("str_replace_editor", {
             "file_path": file_path,
             "old_str": old_str,
@@ -874,9 +921,14 @@ def register_tools(mcp: FastMCP, sandbox: SandboxManager) -> None:
         scope_name: str | None = None,
         agent_id: str | None = None,
     ) -> str:
-        """Manage proxy scope patterns for domain/file filtering.
-        Actions: get, list, create, update, delete.
-        Use allowlist for domain patterns to include, denylist to exclude."""
+        """Manage proxy scope rules for domain filtering.
+
+        action: get | list | create | update | delete
+        allowlist: domain patterns to include (e.g. ["*.example.com"])
+        denylist: domain patterns to exclude
+        scope_id: scope identifier (required for get/update/delete)
+        scope_name: human-readable scope name (for create/update)
+        agent_id: subagent identifier from dispatch_agent (omit for coordinator)"""
         kwargs: dict[str, Any] = {"action": action}
         if allowlist is not None:
             kwargs["allowlist"] = allowlist
@@ -899,9 +951,13 @@ def register_tools(mcp: FastMCP, sandbox: SandboxManager) -> None:
         page: int = 1,
         agent_id: str | None = None,
     ) -> str:
-        """View hierarchical sitemap of discovered attack surface from proxy traffic.
-        Use parent_id to drill down into subdirectories.
-        depth: DIRECT (immediate children) or ALL (recursive)."""
+        """View the hierarchical sitemap of discovered attack surface from proxy traffic.
+
+        scope_id: filter by scope
+        parent_id: drill down into a specific node's children
+        depth: DIRECT (immediate children only) | ALL (full recursive tree)
+        page: page number for pagination
+        agent_id: subagent identifier from dispatch_agent (omit for coordinator)"""
         kwargs: dict[str, Any] = {"depth": depth, "page": page}
         if scope_id is not None:
             kwargs["scope_id"] = scope_id
@@ -917,7 +973,10 @@ def register_tools(mcp: FastMCP, sandbox: SandboxManager) -> None:
         entry_id: str,
         agent_id: str | None = None,
     ) -> str:
-        """Get detailed info about a specific sitemap entry and its related requests."""
+        """Get detailed information about a specific sitemap entry and its related HTTP requests.
+
+        entry_id: the sitemap entry ID from list_sitemap
+        agent_id: subagent identifier from dispatch_agent (omit for coordinator)"""
         result = await sandbox.proxy_tool("view_sitemap_entry", {
             "entry_id": entry_id,
             **({"agent_id": agent_id} if agent_id else {}),
