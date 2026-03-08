@@ -104,6 +104,103 @@ CHAIN_RULES: list[ChainRule] = [
 ]
 
 
+_CODE_TARGET_TEMPLATE = """You are a security testing specialist. Your target code is at /workspace.
+
+**FIRST — Load your knowledge modules:**
+Call the `get_module` tool for each of these modules and read the full content carefully. They contain advanced exploitation techniques, bypass methods, and validation requirements that you MUST use:
+{module_list}
+
+**Use `agent_id="{agent_id}"` for ALL Strix tool calls** (terminal_execute, browser_action, send_request, python_action, list_files, search_files, etc.)
+
+**YOUR TASK:** {task}
+{chain_section}
+**APPROACH:**
+1. Read your module(s) fully — they are your primary testing guide, not generic knowledge
+2. Analyze the source code in /workspace for this vulnerability class using terminal_execute, search_files, list_files
+3. Start the target application if possible and test dynamically
+4. Test dynamically against the running app using send_request, repeat_request, browser_action
+5. Use established tools where appropriate: nuclei, sqlmap, ffuf, jwt_tool, semgrep
+6. Never rely solely on static analysis — always attempt dynamic testing
+7. Validate all findings with proof of exploitation — demonstrate concrete impact
+8. Check `list_vulnerability_reports` before filing to avoid duplicates
+9. File findings with `create_vulnerability_report` — include `affected_endpoint` and `cvss_score` when possible
+10. Return your findings as a structured list with: title, severity, evidence, and remediation"""
+
+_WEB_ONLY_TEMPLATE = """You are a security testing specialist. Your target is a LIVE WEB APPLICATION — there is no source code to review.
+
+**FIRST — Load your knowledge modules:**
+Call the `get_module` tool for each of these modules and read the full content carefully:
+{module_list}
+
+**Use `agent_id="{agent_id}"` for ALL Strix tool calls.**
+
+**YOUR TASK:** {task}
+{chain_section}
+**APPROACH (web-only — no source code):**
+1. Read your module(s) fully — they are your primary testing guide
+2. Explore the target with `browser_action`: launch → goto target URL → crawl key pages → capture screenshots
+3. Review captured proxy traffic with `list_requests` to map the attack surface
+4. Test dynamically:
+   - Use `send_request` and `repeat_request` for API-level testing
+   - Use `browser_action` for UI-level testing (forms, uploads, client-side behavior)
+   - Use `terminal_execute` to run automated scanners: nuclei, sqlmap, ffuf, wapiti
+   - Use `python_action` for custom exploit scripts and concurrency
+5. For reconnaissance: run `ffuf` for directory/endpoint discovery, `nuclei` with relevant templates
+6. Check `list_vulnerability_reports` before filing to avoid duplicates
+7. Validate all findings with proof of exploitation — demonstrate concrete impact
+8. File findings with `create_vulnerability_report` — include `affected_endpoint` and `cvss_score` when possible
+9. Return your findings as a structured list with: title, severity, evidence, and remediation"""
+
+_CHAIN_CONTEXT_SECTION = """
+**CHAIN CONTEXT — Phase 1 agents found these related vulnerabilities:**
+- Finding A: {finding_a}
+- Finding B: {finding_b}
+Your goal: combine these into **{chain_name}**. Attempt the full exploit chain and report the combined severity.
+"""
+
+
+def build_agent_prompt(
+    task: str,
+    modules: list[str],
+    agent_id: str,
+    is_web_only: bool = False,
+    chain_context: dict[str, str] | None = None,
+) -> str:
+    """Build a complete agent prompt from templates.
+
+    Parameters
+    ----------
+    task:
+        Task description for the agent.
+    modules:
+        List of module names the agent should load.
+    agent_id:
+        The registered agent_id for tool calls.
+    is_web_only:
+        If True, use the web-only template (no source code).
+    chain_context:
+        Optional dict with 'finding_a', 'finding_b', 'chain_name'
+        for Phase 2 chain agents.
+    """
+    module_list = "\n".join(f'- get_module("{m}")' for m in modules)
+
+    chain_section = ""
+    if chain_context:
+        chain_section = _CHAIN_CONTEXT_SECTION.format(
+            finding_a=chain_context["finding_a"],
+            finding_b=chain_context["finding_b"],
+            chain_name=chain_context["chain_name"],
+        )
+
+    template = _WEB_ONLY_TEMPLATE if is_web_only else _CODE_TARGET_TEMPLATE
+    return template.format(
+        module_list=module_list,
+        agent_id=agent_id,
+        task=task,
+        chain_section=chain_section,
+    )
+
+
 def _title_matches(title: str, keywords: list[str]) -> bool:
     """Check if a normalized title matches any of the keywords."""
     t = title.lower().strip()

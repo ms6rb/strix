@@ -1,5 +1,5 @@
 import pytest
-from strix_mcp.chaining import CHAIN_RULES, ChainRule, detect_chains
+from strix_mcp.chaining import CHAIN_RULES, ChainRule, detect_chains, build_agent_prompt
 
 
 class TestChainRules:
@@ -116,3 +116,79 @@ class TestDetectChains:
             chain = chains[0]
             assert chain["finding_a"] in [r["title"] for r in reports]
             assert chain["finding_b"] in [r["title"] for r in reports]
+
+
+class TestBuildAgentPrompt:
+    def test_code_target_prompt_contains_agent_id(self):
+        """Code target prompt should include the agent_id."""
+        prompt = build_agent_prompt(
+            task="Test IDOR",
+            modules=["idor"],
+            agent_id="mcp_agent_1",
+        )
+        assert 'agent_id="mcp_agent_1"' in prompt
+
+    def test_code_target_prompt_contains_modules(self):
+        """Prompt should list get_module calls for each module."""
+        prompt = build_agent_prompt(
+            task="Test auth",
+            modules=["authentication_jwt", "idor"],
+            agent_id="mcp_agent_1",
+        )
+        assert 'get_module("authentication_jwt")' in prompt
+        assert 'get_module("idor")' in prompt
+
+    def test_code_target_prompt_contains_task(self):
+        """Prompt should include the task description."""
+        prompt = build_agent_prompt(
+            task="Test SQL injection in login",
+            modules=["sql_injection"],
+            agent_id="mcp_agent_2",
+        )
+        assert "Test SQL injection in login" in prompt
+
+    def test_code_target_prompt_has_workspace(self):
+        """Default (code target) prompt should reference /workspace."""
+        prompt = build_agent_prompt(
+            task="Test XSS",
+            modules=["xss"],
+            agent_id="mcp_agent_1",
+        )
+        assert "/workspace" in prompt
+
+    def test_web_only_prompt_no_workspace_analysis(self):
+        """Web-only prompt should NOT tell agent to analyze source code."""
+        prompt = build_agent_prompt(
+            task="Test XSS",
+            modules=["xss"],
+            agent_id="mcp_agent_1",
+            is_web_only=True,
+        )
+        assert "source code" not in prompt.lower() or "no source code" in prompt.lower()
+        assert "browser_action" in prompt
+
+    def test_web_only_prompt_mentions_live_target(self):
+        """Web-only prompt should mention live web application."""
+        prompt = build_agent_prompt(
+            task="Test SSRF",
+            modules=["ssrf"],
+            agent_id="mcp_agent_1",
+            is_web_only=True,
+        )
+        assert "LIVE" in prompt or "live" in prompt
+
+    def test_chain_prompt_includes_context(self):
+        """When chain_context is provided, prompt should include Phase 1 findings."""
+        prompt = build_agent_prompt(
+            task="Chain: XSS + HttpOnly → session hijack",
+            modules=["xss", "authentication_jwt"],
+            agent_id="mcp_agent_3",
+            chain_context={
+                "finding_a": "Stored XSS in /comments",
+                "finding_b": "Session cookies missing HttpOnly",
+                "chain_name": "Account takeover via session hijack",
+            },
+        )
+        assert "Stored XSS in /comments" in prompt
+        assert "Session cookies missing HttpOnly" in prompt
+        assert "session hijack" in prompt.lower()
