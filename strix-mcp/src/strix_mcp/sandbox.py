@@ -26,8 +26,12 @@ class ScanState:
     port: int
     default_agent_id: str
     agent_counter: int = 0
-    registered_agents: list[str] = field(default_factory=list)
+    registered_agents: dict[str, str] = field(default_factory=dict)
     started_at: datetime = field(default_factory=lambda: datetime.now(UTC))
+
+    def __post_init__(self) -> None:
+        if self.default_agent_id and self.default_agent_id not in self.registered_agents:
+            self.registered_agents[self.default_agent_id] = "coordinator"
 
 
 class SandboxManager:
@@ -124,11 +128,11 @@ class SandboxManager:
                 token=sandbox_info["auth_token"] or "",
                 port=sandbox_info["tool_server_port"],
                 default_agent_id=default_agent_id,
-                registered_agents=[default_agent_id],
+                registered_agents={default_agent_id: "coordinator"},
             )
             return self._active_scan
 
-    async def register_agent(self) -> str:
+    async def register_agent(self, task_name: str = "") -> str:
         scan = self._active_scan
         if scan is None:
             raise RuntimeError("No active scan. Call start_scan first.")
@@ -148,7 +152,7 @@ class SandboxManager:
         except (httpx.ConnectError, httpx.TimeoutException) as e:
             raise RuntimeError(f"Failed to register agent with sandbox: {e}") from e
 
-        scan.registered_agents.append(agent_id)
+        scan.registered_agents[agent_id] = task_name
         return agent_id
 
     async def end_scan(self) -> None:

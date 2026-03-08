@@ -267,14 +267,17 @@ def register_tools(mcp: FastMCP, sandbox: SandboxManager) -> None:
         })
 
     @mcp.tool()
-    async def register_agent() -> str:
+    async def register_agent(task_name: str = "") -> str:
         """Register a new agent ID for concurrent subagent testing.
         Call this at the start of each Claude Code subagent's work.
         Pass the returned agent_id to all subsequent tool calls.
-        Each agent gets isolated terminal, browser, and Python sessions."""
-        agent_id = await sandbox.register_agent()
+        Each agent gets isolated terminal, browser, and Python sessions.
+
+        task_name: optional label for what this agent is testing (e.g. 'SQL injection testing')."""
+        agent_id = await sandbox.register_agent(task_name=task_name)
         return json.dumps({
             "agent_id": agent_id,
+            "task_name": task_name,
             "message": f"Agent registered. Pass agent_id='{agent_id}' to all tool calls.",
         })
 
@@ -298,7 +301,11 @@ def register_tools(mcp: FastMCP, sandbox: SandboxManager) -> None:
             "status": "running",
             "elapsed_seconds": round(elapsed),
             "agents_registered": len(scan.registered_agents),
-            "agent_ids": scan.registered_agents,
+            "agent_ids": list(scan.registered_agents.keys()),
+            "agents": [
+                {"id": aid, "task": name}
+                for aid, name in scan.registered_agents.items()
+            ],
             "total_reports": len(vulnerability_reports),
             "severity_counts": severity_counts,
         })

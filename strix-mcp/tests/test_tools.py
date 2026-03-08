@@ -20,6 +20,32 @@ class TestScanState:
         assert isinstance(state.started_at, datetime)
 
 
+class TestScanStateAgentNaming:
+    def test_registered_agents_is_dict(self):
+        """registered_agents should be a dict mapping agent_id -> task_name."""
+        state = ScanState(
+            scan_id="test",
+            workspace_id="ws-1",
+            api_url="http://localhost:8080",
+            token="tok",
+            port=8080,
+            default_agent_id="mcp-test",
+        )
+        assert isinstance(state.registered_agents, dict)
+
+    def test_default_agent_in_registered_agents(self):
+        """Default agent should be in registered_agents with empty task name."""
+        state = ScanState(
+            scan_id="test",
+            workspace_id="ws-1",
+            api_url="http://localhost:8080",
+            token="tok",
+            port=8080,
+            default_agent_id="mcp-test",
+        )
+        assert "mcp-test" in state.registered_agents
+
+
 class TestListModulesTool:
     def test_list_modules_returns_valid_json(self):
         """list_modules should return JSON with module names, categories, descriptions."""
