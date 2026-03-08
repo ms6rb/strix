@@ -192,3 +192,50 @@ class TestBuildAgentPrompt:
         assert "Stored XSS in /comments" in prompt
         assert "Session cookies missing HttpOnly" in prompt
         assert "session hijack" in prompt.lower()
+
+
+class TestDispatchAgentPromptIntegration:
+    def test_dispatch_builds_valid_prompt(self):
+        """Simulating what dispatch_agent does: register + build prompt."""
+        agent_id = "mcp_agent_1"
+        task = "Test IDOR and access control"
+        modules = ["idor", "broken_function_level_authorization"]
+
+        prompt = build_agent_prompt(task=task, modules=modules, agent_id=agent_id)
+
+        # The prompt should be a non-empty string with all key pieces
+        assert isinstance(prompt, str)
+        assert len(prompt) > 200
+        assert agent_id in prompt
+        assert task in prompt
+        for m in modules:
+            assert m in prompt
+
+    def test_dispatch_chain_agent_builds_context_prompt(self):
+        """Chain dispatch should include both findings in the prompt."""
+        agent_id = "mcp_agent_5"
+        chain = {
+            "chain_name": "Account takeover via session hijack",
+            "priority": "critical",
+            "finding_a": "Stored XSS in /comments",
+            "finding_b": "Session cookies missing HttpOnly",
+            "dispatch": {
+                "task": "Chain: XSS + HttpOnly → session hijack",
+                "modules": ["xss", "authentication_jwt"],
+            },
+        }
+
+        prompt = build_agent_prompt(
+            task=chain["dispatch"]["task"],
+            modules=chain["dispatch"]["modules"],
+            agent_id=agent_id,
+            chain_context={
+                "finding_a": chain["finding_a"],
+                "finding_b": chain["finding_b"],
+                "chain_name": chain["chain_name"],
+            },
+        )
+
+        assert "Stored XSS in /comments" in prompt
+        assert "Session cookies missing HttpOnly" in prompt
+        assert agent_id in prompt

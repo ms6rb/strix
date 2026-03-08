@@ -542,6 +542,62 @@ def register_tools(mcp: FastMCP, sandbox: SandboxManager) -> None:
         from . import resources
         return resources.list_modules(category=category)
 
+    @mcp.tool()
+    async def dispatch_agent(
+        task: str,
+        modules: list[str],
+        is_web_only: bool = False,
+        chain_context: dict[str, str] | None = None,
+    ) -> str:
+        """Register a new agent and return a ready-to-use prompt for the Agent tool.
+
+        This simplifies agent dispatch: instead of calling register_agent + manually
+        composing a prompt, call this once and pass the returned prompt to the Agent tool.
+
+        task: what the agent should test (e.g. 'Test IDOR and access control')
+        modules: list of module names the agent should load (e.g. ['idor', 'authentication_jwt'])
+        is_web_only: set True for web-only targets (no source code in /workspace)
+        chain_context: optional dict with 'finding_a', 'finding_b', 'chain_name' for Phase 2 chain agents"""
+        from .chaining import build_agent_prompt
+
+        agent_id = await sandbox.register_agent(task_name=task)
+        prompt = build_agent_prompt(
+            task=task,
+            modules=modules,
+            agent_id=agent_id,
+            is_web_only=is_web_only,
+            chain_context=chain_context,
+        )
+        return json.dumps({
+            "agent_id": agent_id,
+            "prompt": prompt,
+        })
+
+    @mcp.tool()
+    async def suggest_chains() -> str:
+        """Analyze all vulnerability reports for chaining opportunities.
+
+        Returns all detected chains — both new (not yet dispatched) and
+        previously fired. Use this after Phase 1 completes to review
+        all potential attack chains.
+
+        Each chain includes a dispatch payload with task and modules
+        that can be passed directly to dispatch_agent."""
+        from .chaining import detect_chains
+
+        # Run detection without modifying fired set (show everything)
+        all_chains = detect_chains(vulnerability_reports, fired=set())
+
+        for chain in all_chains:
+            chain["dispatched"] = chain["chain_name"] in fired_chains
+
+        new_count = sum(1 for c in all_chains if not c["dispatched"])
+        return json.dumps({
+            "total_chains": len(all_chains),
+            "new_chains": new_count,
+            "chains": all_chains,
+        })
+
     # --- Proxied Tools ---
 
     @mcp.tool()
