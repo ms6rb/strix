@@ -1,6 +1,5 @@
 """Unit tests for MCP tools (no Docker required)."""
 import json
-import tempfile
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -88,57 +87,152 @@ class TestConcurrentProbing:
         assert len(PROBE_PATHS) == len(set(PROBE_PATHS))
 
 
-from strix_mcp.tools import _normalize_title, _find_duplicate, _categorize_owasp, _deduplicate_reports, _write_scan_meta, _append_finding, _write_report
+from strix_mcp.tools import _normalize_title, _find_duplicate, _categorize_owasp, _deduplicate_reports
 
 
-class TestScanPersistence:
-    def test_write_scan_meta_creates_file(self):
-        """_write_scan_meta should create scan_meta.json in scan_dir."""
-        with tempfile.TemporaryDirectory() as tmpdir:
-            scan_dir = Path(tmpdir) / "test-scan"
-            _write_scan_meta(scan_dir, "test-scan", [{"type": "web_application", "value": "http://example.com"}], {"runtime": ["node"]})
-            meta_path = scan_dir / "scan_meta.json"
-            assert meta_path.exists()
-            meta = json.loads(meta_path.read_text())
-            assert meta["scan_id"] == "test-scan"
-            assert meta["targets"][0]["value"] == "http://example.com"
-            assert meta["detected_stack"]["runtime"] == ["node"]
+class TestStrixRunsPersistence:
+    """Test upstream-compatible strix_runs/ persistence format."""
 
-    def test_append_finding_creates_jsonl(self):
-        """_append_finding should append a report as a JSON line with event type."""
-        with tempfile.TemporaryDirectory() as tmpdir:
-            scan_dir = Path(tmpdir)
-            report = {"id": "vuln-abc", "title": "XSS", "severity": "high", "content": "found xss"}
-            _append_finding(scan_dir, report)
-            _append_finding(scan_dir, {"id": "vuln-def", "title": "SQLi", "severity": "critical", "content": "sqli"})
-            findings_path = scan_dir / "findings.jsonl"
-            assert findings_path.exists()
-            lines = findings_path.read_text().strip().splitlines()
-            assert len(lines) == 2
-            first = json.loads(lines[0])
-            assert first["id"] == "vuln-abc"
-            assert first["event"] == "new"
+    def test_get_run_dir_creates_structure(self, tmp_path, monkeypatch):
+        """_get_run_dir should create strix_runs/<scan_id>/ in cwd."""
+        monkeypatch.chdir(tmp_path)
+        from strix_mcp.tools import _get_run_dir
 
-    def test_append_finding_merge_event(self):
-        """_append_finding with event='merge' should tag the entry accordingly."""
-        with tempfile.TemporaryDirectory() as tmpdir:
-            scan_dir = Path(tmpdir)
-            report = {"id": "vuln-abc", "title": "XSS", "severity": "high", "content": "merged evidence"}
-            _append_finding(scan_dir, report, event="merge")
-            line = json.loads((scan_dir / "findings.jsonl").read_text().strip())
-            assert line["event"] == "merge"
-            assert line["id"] == "vuln-abc"
+        run_dir = _get_run_dir("scan-abc123")
+        assert run_dir.exists()
+        assert run_dir == tmp_path / "strix_runs" / "scan-abc123"
 
-    def test_write_report_creates_summary(self):
-        """_write_report should write the final report.json."""
-        with tempfile.TemporaryDirectory() as tmpdir:
-            scan_dir = Path(tmpdir)
-            summary = {"unique_findings": 2, "severity_counts": {"high": 1, "critical": 1}}
-            _write_report(scan_dir, summary)
-            report_path = scan_dir / "report.json"
-            assert report_path.exists()
-            data = json.loads(report_path.read_text())
-            assert data["unique_findings"] == 2
+    def test_write_finding_md_creates_file(self, tmp_path):
+        """_write_finding_md should create vulnerabilities/<id>.md."""
+        from strix_mcp.tools import _write_finding_md
+
+        report = {
+            "id": "vuln-001",
+            "title": "SQL Injection in login",
+            "severity": "critical",
+            "content": "The login form is vulnerable to SQLi.",
+            "timestamp": "2026-03-08T12:00:00+00:00",
+        }
+        _write_finding_md(tmp_path, report)
+
+        vuln_file = tmp_path / "vulnerabilities" / "vuln-001.md"
+        assert vuln_file.exists()
+
+        content = vuln_file.read_text()
+        assert "# SQL Injection in login" in content
+        assert "**Severity:** CRITICAL" in content
+        assert "**ID:** vuln-001" in content
+        assert "The login form is vulnerable to SQLi." in content
+
+    def test_write_finding_md_includes_optional_fields(self, tmp_path):
+        """_write_finding_md should include endpoint, cvss, etc. when present."""
+        from strix_mcp.tools import _write_finding_md
+
+        report = {
+            "id": "vuln-002",
+            "title": "IDOR on user profiles",
+            "severity": "high",
+            "content": "User IDs are sequential and unprotected.",
+            "timestamp": "2026-03-08T12:00:00+00:00",
+            "affected_endpoints": ["/api/users/1", "/api/users/2"],
+            "cvss_score": 7.5,
+        }
+        _write_finding_md(tmp_path, report)
+
+        content = (tmp_path / "vulnerabilities" / "vuln-002.md").read_text()
+        assert "**CVSS:** 7.5" in content
+        assert "/api/users/1" in content
+
+    def test_write_vuln_csv_creates_sorted_index(self, tmp_path):
+        """_write_vuln_csv should create a CSV sorted by severity."""
+        from strix_mcp.tools import _write_vuln_csv
+
+        reports = [
+            {"id": "vuln-001", "title": "Info leak", "severity": "info", "timestamp": "2026-03-08T12:00:00"},
+            {"id": "vuln-002", "title": "SQLi", "severity": "critical", "timestamp": "2026-03-08T12:01:00"},
+            {"id": "vuln-003", "title": "XSS", "severity": "high", "timestamp": "2026-03-08T12:02:00"},
+        ]
+        _write_vuln_csv(tmp_path, reports)
+
+        csv_file = tmp_path / "vulnerabilities.csv"
+        assert csv_file.exists()
+        lines = csv_file.read_text().strip().split("\n")
+        assert len(lines) == 4  # header + 3 rows
+        # First data row should be critical (highest severity)
+        assert "vuln-002" in lines[1]
+
+    def test_write_finding_md_overwrite_on_merge(self, tmp_path):
+        """_write_finding_md should overwrite the file on merge (updated content)."""
+        from strix_mcp.tools import _write_finding_md
+
+        report = {
+            "id": "vuln-001",
+            "title": "XSS in comments",
+            "severity": "medium",
+            "content": "Original evidence.",
+            "timestamp": "2026-03-08T12:00:00+00:00",
+        }
+        _write_finding_md(tmp_path, report)
+
+        # Simulate merge — severity upgraded, content appended
+        report["severity"] = "high"
+        report["content"] += "\n\n---\n\n**Additional evidence:**\nMore proof."
+        _write_finding_md(tmp_path, report)
+
+        content = (tmp_path / "vulnerabilities" / "vuln-001.md").read_text()
+        assert "**Severity:** HIGH" in content
+        assert "More proof." in content
+
+    def test_write_summary_md_creates_file(self, tmp_path):
+        """_write_summary_md should create summary.md with severity counts."""
+        from strix_mcp.tools import _write_summary_md
+
+        summary = {
+            "unique_findings": 3,
+            "severity_counts": {"critical": 1, "high": 1, "medium": 1},
+            "findings": [
+                {"id": "vuln-001", "title": "SQLi", "severity": "critical"},
+                {"id": "vuln-002", "title": "XSS", "severity": "high"},
+                {"id": "vuln-003", "title": "CSRF", "severity": "medium"},
+            ],
+        }
+        _write_summary_md(tmp_path, summary)
+
+        summary_file = tmp_path / "summary.md"
+        assert summary_file.exists()
+        content = summary_file.read_text()
+        assert "critical" in content.lower()
+        assert "SQLi" in content
+        assert "3" in content  # unique_findings count
+
+
+class TestGetFinding:
+    """Tests for the get_finding selective recall tool."""
+
+    def test_get_finding_reads_existing_file(self, tmp_path):
+        """get_finding should return the markdown content of a finding."""
+        from strix_mcp.tools import _write_finding_md
+
+        report = {
+            "id": "vuln-abc123",
+            "title": "SSRF in image proxy",
+            "severity": "high",
+            "content": "The /proxy endpoint allows SSRF.",
+            "timestamp": "2026-03-08T12:00:00+00:00",
+        }
+        _write_finding_md(tmp_path, report)
+
+        # Simulate what get_finding does
+        vuln_file = tmp_path / "vulnerabilities" / "vuln-abc123.md"
+        assert vuln_file.exists()
+        content = vuln_file.read_text()
+        assert "SSRF in image proxy" in content
+        assert "The /proxy endpoint allows SSRF." in content
+
+    def test_get_finding_missing_id_returns_error(self, tmp_path):
+        """Non-existent finding ID should result in file not found."""
+        vuln_file = tmp_path / "vulnerabilities" / "vuln-nonexistent.md"
+        assert not vuln_file.exists()
 
 
 class TestTitleNormalization:

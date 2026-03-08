@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import json
-import os
 import uuid
 from datetime import UTC, datetime
 from pathlib import Path
@@ -143,53 +142,101 @@ def _deduplicate_reports(
     return list(seen.values())
 
 
-# --- Scan persistence ---
-
-_SCANS_DIR = Path(os.environ.get("STRIX_SCANS_DIR", Path.home() / ".strix" / "scans"))
+# --- Scan persistence (upstream-compatible strix_runs/ format) ---
 
 
-def _get_scan_dir(scan_id: str) -> Path:
-    """Return the directory for a scan, creating it if needed."""
-    scan_dir = _SCANS_DIR / scan_id
-    scan_dir.mkdir(parents=True, exist_ok=True)
-    return scan_dir
+def _get_run_dir(scan_id: str) -> Path:
+    """Return strix_runs/<scan_id>/ in cwd, creating if needed."""
+    run_dir = Path.cwd() / "strix_runs" / scan_id
+    run_dir.mkdir(parents=True, exist_ok=True)
+    return run_dir
 
 
-def _write_scan_meta(
-    scan_dir: Path,
-    scan_id: str,
-    targets: list[dict[str, str]],
-    detected_stack: dict[str, Any] | None,
-) -> None:
-    """Write scan metadata to scan_meta.json."""
-    scan_dir.mkdir(parents=True, exist_ok=True)
-    meta = {
-        "scan_id": scan_id,
-        "started_at": datetime.now(UTC).isoformat(),
-        "targets": targets,
-        "detected_stack": detected_stack,
-    }
-    (scan_dir / "scan_meta.json").write_text(json.dumps(meta, indent=2))
+def _write_finding_md(run_dir: Path, report: dict[str, Any]) -> None:
+    """Write a finding as an individual markdown file.
 
-
-def _append_finding(scan_dir: Path, report: dict[str, Any], event: str = "new") -> None:
-    """Append a finding event as a JSON line to findings.jsonl.
-
-    event: 'new' for first report, 'merge' for duplicate merge.
+    Matches upstream Strix format: strix_runs/<scan>/vulnerabilities/<id>.md
+    Overwrites on merge so the file always reflects current state.
     """
-    entry = {"event": event, **report}
-    with open(scan_dir / "findings.jsonl", "a") as f:
-        f.write(json.dumps(entry) + "\n")
+    vuln_dir = run_dir / "vulnerabilities"
+    vuln_dir.mkdir(exist_ok=True)
+    vuln_file = vuln_dir / f"{report['id']}.md"
+
+    lines: list[str] = []
+    lines.append(f"# {report.get('title', 'Untitled Vulnerability')}\n")
+    lines.append(f"**ID:** {report['id']}")
+    lines.append(f"**Severity:** {report.get('severity', 'unknown').upper()}")
+    lines.append(f"**Found:** {report.get('timestamp', 'unknown')}")
+
+    if report.get("affected_endpoints"):
+        lines.append(f"**Endpoints:** {', '.join(report['affected_endpoints'])}")
+    if report.get("cvss_score") is not None:
+        lines.append(f"**CVSS:** {report['cvss_score']}")
+
+    lines.append("")
+    lines.append("## Details\n")
+    lines.append(report.get("content", "No details provided."))
+    lines.append("")
+
+    vuln_file.write_text("\n".join(lines))
 
 
-def _write_report(scan_dir: Path, summary: dict[str, Any]) -> None:
-    """Write the final scan report to report.json."""
-    (scan_dir / "report.json").write_text(json.dumps(summary, indent=2))
+def _write_vuln_csv(run_dir: Path, reports: list[dict[str, Any]]) -> None:
+    """Write vulnerabilities.csv index sorted by severity (critical first)."""
+    import csv
+
+    severity_order = {"critical": 0, "high": 1, "medium": 2, "low": 3, "info": 4}
+    sorted_reports = sorted(
+        reports,
+        key=lambda r: (severity_order.get(r.get("severity", "info"), 5), r.get("timestamp", "")),
+    )
+
+    csv_file = run_dir / "vulnerabilities.csv"
+    with csv_file.open("w", encoding="utf-8", newline="") as f:
+        writer = csv.DictWriter(f, fieldnames=["id", "title", "severity", "timestamp", "file"])
+        writer.writeheader()
+        for r in sorted_reports:
+            writer.writerow({
+                "id": r["id"],
+                "title": r["title"],
+                "severity": r["severity"].upper(),
+                "timestamp": r.get("timestamp", ""),
+                "file": f"vulnerabilities/{r['id']}.md",
+            })
+
+
+def _write_summary_md(run_dir: Path, summary: dict[str, Any]) -> None:
+    """Write a human-readable scan summary as summary.md."""
+    lines: list[str] = []
+    lines.append("# Scan Summary\n")
+
+    unique = summary.get("unique_findings", 0)
+    lines.append(f"**Total unique findings:** {unique}")
+
+    sev = summary.get("severity_counts", {})
+    if sev:
+        lines.append("\n## Severity Breakdown\n")
+        for level in ("critical", "high", "medium", "low", "info"):
+            count = sev.get(level, 0)
+            if count:
+                lines.append(f"- **{level.upper()}:** {count}")
+
+    findings = summary.get("findings", [])
+    if findings:
+        lines.append("\n## Findings\n")
+        lines.append("| ID | Title | Severity |")
+        lines.append("|---|---|---|")
+        for f in findings:
+            lines.append(f"| {f['id']} | {f['title']} | {f['severity'].upper()} |")
+
+    lines.append("")
+    (run_dir / "summary.md").write_text("\n".join(lines))
 
 
 def register_tools(mcp: FastMCP, sandbox: SandboxManager) -> None:
     vulnerability_reports: list[dict[str, Any]] = []
     scan_dir: Path | None = None
+    fired_chains: set[str] = set()
 
     # --- Lifecycle Tools ---
 
@@ -260,8 +307,9 @@ def register_tools(mcp: FastMCP, sandbox: SandboxManager) -> None:
             }
 
         nonlocal scan_dir
-        scan_dir = _get_scan_dir(sid)
-        _write_scan_meta(scan_dir, sid, targets, analysis.get("detected_stack"))
+        scan_dir = _get_run_dir(sid)
+        vulnerability_reports.clear()
+        fired_chains.clear()
 
         return json.dumps({
             "scan_id": state.scan_id,
@@ -315,7 +363,8 @@ def register_tools(mcp: FastMCP, sandbox: SandboxManager) -> None:
             ],
         }
         if scan_dir:
-            _write_report(scan_dir, summary)
+            _write_vuln_csv(scan_dir, unique)
+            _write_summary_md(scan_dir, summary)
 
         await sandbox.end_scan()
 
@@ -396,12 +445,12 @@ def register_tools(mcp: FastMCP, sandbox: SandboxManager) -> None:
                 existing["cvss_score"] = cvss_score
             existing["content"] += f"\n\n---\n\n**Additional evidence:**\n{content}"
             if scan_dir:
-                _append_finding(scan_dir, existing, event="merge")
+                _write_finding_md(scan_dir, existing)
             return json.dumps({
                 "report_id": existing["id"],
                 "title": existing["title"],
                 "severity": existing["severity"],
-                "message": f"Merged with existing report '{existing['title']}'. Evidence appended.",
+                "file": f"strix_runs/{scan_dir.name}/vulnerabilities/{existing['id']}.md" if scan_dir else None,
                 "merged": True,
             })
 
@@ -418,12 +467,12 @@ def register_tools(mcp: FastMCP, sandbox: SandboxManager) -> None:
             report["cvss_score"] = cvss_score
         vulnerability_reports.append(report)
         if scan_dir:
-            _append_finding(scan_dir, report)
+            _write_finding_md(scan_dir, report)
         return json.dumps({
             "report_id": report["id"],
             "title": title,
             "severity": severity,
-            "message": "Vulnerability report saved.",
+            "file": f"strix_runs/{scan_dir.name}/vulnerabilities/{report['id']}.md" if scan_dir else None,
             "merged": False,
         })
 
@@ -449,6 +498,21 @@ def register_tools(mcp: FastMCP, sandbox: SandboxManager) -> None:
             ],
             "total": len(filtered),
         })
+
+    @mcp.tool()
+    async def get_finding(finding_id: str) -> str:
+        """Read the full details of a specific vulnerability finding from disk.
+        Use this to recall finding details without keeping all content in memory.
+
+        finding_id: the report ID (e.g. 'vuln-a1b2c3d4')."""
+        if scan_dir is None:
+            return json.dumps({"error": "No active scan."})
+
+        vuln_file = scan_dir / "vulnerabilities" / f"{finding_id}.md"
+        if not vuln_file.exists():
+            return json.dumps({"error": f"Finding '{finding_id}' not found."})
+
+        return vuln_file.read_text()
 
     @mcp.tool()
     async def get_module(name: str) -> str:
