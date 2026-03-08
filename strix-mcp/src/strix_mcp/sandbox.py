@@ -16,6 +16,14 @@ logger = logging.getLogger(__name__)
 
 STRIX_IMAGE = os.getenv("STRIX_IMAGE", "ghcr.io/usestrix/strix-sandbox:0.1.12")
 
+PROBE_PATHS = [
+    "/graphql", "/api", "/api/swagger", "/wp-admin", "/robots.txt",
+    "/api-docs", "/api-json", "/swagger", "/docs", "/redoc",
+    "/.env", "/actuator", "/actuator/health", "/debug",
+    "/metrics", "/health", "/_next/data", "/api/graphql",
+    "/server-status", "/elmah.axd", "/trace.axd",
+]
+
 
 @dataclass
 class ScanState:
@@ -236,8 +244,8 @@ class SandboxManager:
     async def fingerprint_web_target(self, url: str) -> dict[str, Any]:
         """Fingerprint a web target via HTTP requests through the sandbox proxy.
 
-        Sends requests to the target URL and common paths, collects headers,
-        cookies, and body signals for stack detection.
+        Sends requests to the target URL and common paths concurrently,
+        collects headers, cookies, and body signals for stack detection.
         """
         from .stack_detector import detect_stack_from_http, generate_plan
 
@@ -265,30 +273,29 @@ class SandboxManager:
             if isinstance(body, str):
                 signals["body_signals"] = body[:5000]
 
-        # 2. Probe common paths
-        probe_paths = [
-            "/graphql", "/api", "/api/swagger", "/wp-admin", "/robots.txt",
-            "/api-docs", "/api-json", "/swagger", "/docs", "/redoc",
-            "/.env", "/actuator", "/actuator/health", "/debug",
-            "/metrics", "/health", "/_next/data", "/api/graphql",
-            "/server-status", "/elmah.axd", "/trace.axd",
-        ]
-        probe_results: list[str] = []
-        for path in probe_paths:
-            probe_url = url.rstrip("/") + path
-            probe = await self.proxy_tool("send_request", {
-                "method": "GET",
-                "url": probe_url,
-                "timeout": 10,
-            })
-            if isinstance(probe, dict) and not probe.get("error"):
-                status = probe.get("response", {}).get("status_code", 0)
-                probe_results.append(f"{path}: {status}")
-        signals["probe_results"] = "\n".join(probe_results)
+        # 2. Probe common paths concurrently
+        sem = asyncio.Semaphore(8)
+
+        async def _probe(path: str) -> str | None:
+            async with sem:
+                probe_url = url.rstrip("/") + path
+                probe = await self.proxy_tool("send_request", {
+                    "method": "GET",
+                    "url": probe_url,
+                    "timeout": 10,
+                })
+                if isinstance(probe, dict) and not probe.get("error"):
+                    status = probe.get("response", {}).get("status_code", 0)
+                    return f"{path}: {status}"
+                return None
+
+        results = await asyncio.gather(*[_probe(p) for p in PROBE_PATHS])
+        probe_output = "\n".join(r for r in results if r)
+        signals["probe_results"] = probe_output
 
         stack = detect_stack_from_http(signals)
-        plan = generate_plan(stack)
-        result: dict[str, Any] = {
+        plan = generate_plan(stack, probe_results=probe_output)
+        result_dict: dict[str, Any] = {
             "detected_stack": stack,
             "recommended_plan": plan,
         }
@@ -297,9 +304,9 @@ class SandboxManager:
         if "swagger" in stack.get("features", []):
             spec = await self._fetch_openapi_spec(url)
             if spec:
-                result["openapi_spec"] = spec
+                result_dict["openapi_spec"] = spec
 
-        return result
+        return result_dict
 
     async def _fetch_openapi_spec(self, base_url: str) -> dict[str, Any] | None:
         """Try to fetch an OpenAPI/Swagger spec from common paths."""

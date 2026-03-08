@@ -59,6 +59,33 @@ class TestListModulesTool:
             assert "description" in info
 
 
+class TestConcurrentProbing:
+    def test_probe_paths_constant_exists(self):
+        """PROBE_PATHS should be defined as a module-level constant."""
+        from strix_mcp.sandbox import PROBE_PATHS
+        assert isinstance(PROBE_PATHS, list)
+        assert len(PROBE_PATHS) > 10
+
+    def test_probe_paths_contains_critical_paths(self):
+        """PROBE_PATHS should include all key fingerprinting endpoints."""
+        from strix_mcp.sandbox import PROBE_PATHS
+        critical = ["/graphql", "/.env", "/actuator", "/wp-admin", "/swagger",
+                    "/api-docs", "/robots.txt", "/health", "/_next/data"]
+        for path in critical:
+            assert path in PROBE_PATHS, f"Missing critical probe path: {path}"
+
+    def test_probe_paths_all_start_with_slash(self):
+        """Every probe path should be a relative path starting with /."""
+        from strix_mcp.sandbox import PROBE_PATHS
+        for path in PROBE_PATHS:
+            assert path.startswith("/"), f"Probe path missing leading slash: {path}"
+
+    def test_probe_paths_no_duplicates(self):
+        """PROBE_PATHS should not contain duplicate entries."""
+        from strix_mcp.sandbox import PROBE_PATHS
+        assert len(PROBE_PATHS) == len(set(PROBE_PATHS))
+
+
 from strix_mcp.tools import _normalize_title, _find_duplicate, _categorize_owasp, _deduplicate_reports
 
 
