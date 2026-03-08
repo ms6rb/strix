@@ -275,3 +275,37 @@ class TestDetectChainsIntegration:
         names = {c["chain_name"] for c in chains}
         assert any("session hijack" in n.lower() for n in names)
         assert any("internal" in n.lower() for n in names)
+
+
+class TestPendingChainsTracking:
+    def test_fired_chains_tracks_dispatched(self):
+        """fired_chains set should grow as chains are detected."""
+        from strix_mcp.chaining import detect_chains
+
+        fired: set[str] = set()
+        reports = [
+            {"title": "Stored XSS in /comments", "severity": "high"},
+            {"title": "Session cookies missing HttpOnly flag", "severity": "medium"},
+        ]
+        detect_chains(reports, fired=fired)
+        assert len(fired) >= 1
+        assert any("session hijack" in name.lower() for name in fired)
+
+    def test_pending_count_decreases_after_firing(self):
+        """After chains fire, they should be in fired set and not fire again."""
+        from strix_mcp.chaining import detect_chains
+
+        fired: set[str] = set()
+        reports = [
+            {"title": "Stored XSS in /comments", "severity": "high"},
+            {"title": "Session cookies missing HttpOnly flag", "severity": "medium"},
+        ]
+
+        # First detection
+        chains1 = detect_chains(reports, fired=fired)
+        count1 = len(chains1)
+        assert count1 >= 1
+
+        # Second detection — all fired, nothing new
+        chains2 = detect_chains(reports, fired=fired)
+        assert len(chains2) == 0

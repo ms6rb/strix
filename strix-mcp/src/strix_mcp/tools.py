@@ -400,18 +400,23 @@ def register_tools(mcp: FastMCP, sandbox: SandboxManager) -> None:
             sev = r["severity"]
             severity_counts[sev] = severity_counts.get(sev, 0) + 1
 
+        # Count chains detected but not yet dispatched
+        from .chaining import detect_chains
+        all_possible = detect_chains(vulnerability_reports, fired=set())
+        pending_chains = [c for c in all_possible if c["chain_name"] not in fired_chains]
+
         return json.dumps({
             "scan_id": scan.scan_id,
             "status": "running",
             "elapsed_seconds": round(elapsed),
             "agents_registered": len(scan.registered_agents),
-            "agent_ids": list(scan.registered_agents.keys()),
             "agents": [
                 {"id": aid, "task": name}
                 for aid, name in scan.registered_agents.items()
             ],
             "total_reports": len(vulnerability_reports),
             "severity_counts": severity_counts,
+            "pending_chains": len(pending_chains),
         })
 
     @mcp.tool()
