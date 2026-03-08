@@ -48,18 +48,20 @@ def _extract_description(name: str, category: str) -> str:
     return ""
 
 
-def list_modules() -> str:
+def list_modules(category: str | None = None) -> str:
     """List all available security knowledge modules with category and description."""
     from strix.skills import get_available_skills
 
     modules = get_available_skills()
     result = {}
 
-    for category, names in modules.items():
+    for cat, names in modules.items():
+        if category and cat != category:
+            continue
         for name in names:
-            description = _extract_description(name, category)
+            description = _extract_description(name, cat)
             result[name] = {
-                "category": category,
+                "category": cat,
                 "description": description,
             }
 

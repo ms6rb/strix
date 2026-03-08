@@ -66,3 +66,24 @@ def test_get_module_invalid_name_raises():
     """get_module should raise ValueError for unknown module names."""
     with pytest.raises(ValueError, match="not found"):
         get_module("nonexistent_module_xyz")
+
+
+def test_list_modules_filter_by_category():
+    """list_modules with category filter should return only modules in that category."""
+    # Get all modules to find a real category
+    all_modules = json.loads(list_modules())
+    first_module = next(iter(all_modules.values()))
+    category = first_module["category"]
+
+    # Filter by that category
+    filtered = json.loads(list_modules(category=category))
+    assert len(filtered) > 0
+    assert len(filtered) <= len(all_modules)
+    for name, info in filtered.items():
+        assert info["category"] == category
+
+
+def test_list_modules_invalid_category_returns_empty():
+    """list_modules with unknown category should return empty dict."""
+    result = json.loads(list_modules(category="nonexistent_category_xyz"))
+    assert result == {}

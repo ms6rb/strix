@@ -400,14 +400,17 @@ def register_tools(mcp: FastMCP, sandbox: SandboxManager) -> None:
         return resources.get_module(name)
 
     @mcp.tool()
-    async def list_modules() -> str:
+    async def list_modules(category: str | None = None) -> str:
         """List all available security knowledge modules with their categories
         and descriptions. Call this to see what modules you can load with
         get_module().
 
+        Optional category filter to show only modules in a specific category
+        (e.g. 'vulnerabilities', 'frameworks', 'technologies').
+
         Returns JSON mapping module names to {category, description}."""
         from . import resources
-        return resources.list_modules()
+        return resources.list_modules(category=category)
 
     # --- Proxied Tools ---
 
