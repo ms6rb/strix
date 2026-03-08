@@ -446,13 +446,21 @@ def register_tools(mcp: FastMCP, sandbox: SandboxManager) -> None:
             existing["content"] += f"\n\n---\n\n**Additional evidence:**\n{content}"
             if scan_dir:
                 _write_finding_md(scan_dir, existing)
-            return json.dumps({
+
+            # Detect chains after merge
+            from .chaining import detect_chains
+            new_chains = detect_chains(vulnerability_reports, fired=fired_chains)
+
+            result: dict[str, Any] = {
                 "report_id": existing["id"],
                 "title": existing["title"],
                 "severity": existing["severity"],
                 "file": f"strix_runs/{scan_dir.name}/vulnerabilities/{existing['id']}.md" if scan_dir else None,
                 "merged": True,
-            })
+            }
+            if new_chains:
+                result["chains_detected"] = new_chains
+            return json.dumps(result)
 
         report: dict[str, Any] = {
             "id": f"vuln-{uuid.uuid4().hex[:8]}",
@@ -468,13 +476,21 @@ def register_tools(mcp: FastMCP, sandbox: SandboxManager) -> None:
         vulnerability_reports.append(report)
         if scan_dir:
             _write_finding_md(scan_dir, report)
-        return json.dumps({
+
+        # Detect chains after new finding
+        from .chaining import detect_chains
+        new_chains = detect_chains(vulnerability_reports, fired=fired_chains)
+
+        result: dict[str, Any] = {
             "report_id": report["id"],
             "title": title,
             "severity": severity,
             "file": f"strix_runs/{scan_dir.name}/vulnerabilities/{report['id']}.md" if scan_dir else None,
             "merged": False,
-        })
+        }
+        if new_chains:
+            result["chains_detected"] = new_chains
+        return json.dumps(result)
 
     @mcp.tool()
     async def list_vulnerability_reports(severity: str | None = None) -> str:

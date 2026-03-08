@@ -239,3 +239,39 @@ class TestDispatchAgentPromptIntegration:
         assert "Stored XSS in /comments" in prompt
         assert "Session cookies missing HttpOnly" in prompt
         assert agent_id in prompt
+
+
+class TestDetectChainsIntegration:
+    def test_chains_detected_after_second_finding(self):
+        """When two findings match a chain rule, detect_chains should return the chain."""
+        from strix_mcp.chaining import detect_chains
+
+        fired: set[str] = set()
+
+        # First finding — no chain yet
+        reports = [{"title": "Stored XSS in /comments", "severity": "high"}]
+        chains = detect_chains(reports, fired=fired)
+        assert len(chains) == 0
+
+        # Second finding completes the chain
+        reports.append({"title": "Session cookies missing HttpOnly flag", "severity": "medium"})
+        chains = detect_chains(reports, fired=fired)
+        assert len(chains) >= 1
+        assert chains[0]["dispatch"]["modules"] == ["xss", "authentication_jwt"]
+
+    def test_multiple_chains_from_multiple_findings(self):
+        """Multiple chains can fire from a set of findings."""
+        from strix_mcp.chaining import detect_chains
+
+        fired: set[str] = set()
+        reports = [
+            {"title": "Stored XSS in /comments", "severity": "high"},
+            {"title": "Session cookies missing HttpOnly flag", "severity": "medium"},
+            {"title": "SSRF via image URL parameter", "severity": "high"},
+            {"title": "Internal API endpoints discovered", "severity": "info"},
+        ]
+        chains = detect_chains(reports, fired=fired)
+        assert len(chains) >= 2
+        names = {c["chain_name"] for c in chains}
+        assert any("session hijack" in n.lower() for n in names)
+        assert any("internal" in n.lower() for n in names)
