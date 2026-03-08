@@ -529,7 +529,7 @@ def _detect_package_json_fuzzy(
     if _has_dep(text, "better-sqlite3"):
         database.append("sqlite")
         found_any = True
-    if _has_dep(text, "ioredis") or _has_dep(text, "redis"):
+    if _has_dep(text, "ioredis") or re.search(r'["\s]redis["\s,@:]', text, re.IGNORECASE):
         database.append("redis")
         found_any = True
     if _has_dep(text, "@supabase/supabase-js"):
@@ -597,7 +597,7 @@ def _detect_python(
     if _has_dep(text, "django"):
         framework.append("django")
         found_any = True
-    if _has_dep(text, "flask"):
+    if re.search(r'["\s]flask["\s,@:]', text, re.IGNORECASE):
         framework.append("flask")
         found_any = True
 
@@ -611,7 +611,7 @@ def _detect_python(
     if _has_dep(text, "pymongo") or _has_dep(text, "motor"):
         database.append("mongodb")
         found_any = True
-    if _has_dep(text, "redis"):
+    if re.search(r'["\s]redis["\s,@:]', text, re.IGNORECASE):
         database.append("redis")
         found_any = True
 

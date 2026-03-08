@@ -216,6 +216,8 @@ class SandboxManager:
                 headers={"Authorization": f"Bearer {scan.token}"},
                 timeout=300,
             )
+            if response.status_code >= 400:
+                return {"error": f"Sandbox request failed (HTTP {response.status_code}): {response.text[:200]}"}
             try:
                 data = response.json()
             except Exception:
