@@ -860,22 +860,34 @@ def _detect_http_body(
         features.append("websocket")
 
 
+def _probe_has_status(probes: str, path: str, status: str = "200") -> bool:
+    """Check if a specific probe path returned the given status code.
+
+    Probe results are formatted as '/path: status_code' per line.
+    This avoids false positives from checking status globally.
+    """
+    for line in probes.splitlines():
+        if path in line and f": {status}" in line:
+            return True
+    return False
+
+
 def _detect_http_probes(
     probes: str,
     features: list[str],
 ) -> None:
     """Detect features from probing common paths."""
-    if "/graphql" in probes and "200" in probes:
+    if _probe_has_status(probes, "/graphql"):
         features.append("graphql")
-    if "/api/graphql" in probes and "200" in probes and "graphql" not in features:
+    if _probe_has_status(probes, "/api/graphql") and "graphql" not in features:
         features.append("graphql")
-    if any(p in probes for p in ("/api/swagger", "/api-docs", "/api-json", "/swagger", "/docs", "/redoc")) and "200" in probes:
+    if any(_probe_has_status(probes, p) for p in ("/api/swagger", "/api-docs", "/api-json", "/swagger", "/docs", "/redoc")):
         features.append("swagger")
-    if "/wp-admin" in probes and ("200" in probes or "302" in probes):
+    if _probe_has_status(probes, "/wp-admin") or _probe_has_status(probes, "/wp-admin", "302"):
         features.append("wordpress_admin")
-    if "/actuator" in probes and "200" in probes:
+    if _probe_has_status(probes, "/actuator"):
         features.append("spring_actuator")
-    if "/_next/data" in probes and "200" in probes:
+    if _probe_has_status(probes, "/_next/data"):
         features.append("nextjs_data")
-    if "/.env" in probes and "200" in probes:
+    if _probe_has_status(probes, "/.env"):
         features.append("env_exposed")

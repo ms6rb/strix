@@ -332,6 +332,7 @@ def register_tools(mcp: FastMCP, sandbox: SandboxManager) -> None:
         at strix_runs/<scan_id>/ (vulnerabilities/*.md, vulnerabilities.csv, summary.md).
 
         Returns: unique_findings count, severity_counts, findings_by_category."""
+        nonlocal scan_dir
         unique = _deduplicate_reports(vulnerability_reports)
         total_filed = len(vulnerability_reports)
         duplicates_merged = total_filed - len(unique)
@@ -375,6 +376,11 @@ def register_tools(mcp: FastMCP, sandbox: SandboxManager) -> None:
             _write_summary_md(scan_dir, summary)
 
         await sandbox.end_scan()
+
+        # Clear in-memory state so stale data doesn't leak into the next scan
+        vulnerability_reports.clear()
+        fired_chains.clear()
+        scan_dir = None
 
         return json.dumps(summary)
 

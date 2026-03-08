@@ -13,9 +13,6 @@ logger = logging.getLogger(__name__)
 mcp = FastMCP("strix-mcp")
 sandbox = SandboxManager()
 
-# Clean up orphaned containers from previous crashes at startup
-sandbox.cleanup_orphaned_containers()
-
 # Register tools
 register_tools(mcp, sandbox)
 

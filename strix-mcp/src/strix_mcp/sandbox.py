@@ -65,36 +65,48 @@ class SandboxManager:
             self._http_client = httpx.AsyncClient(trust_env=False)
         return self._http_client
 
-    def _ensure_image(self) -> None:
-        """Pull the strix-sandbox Docker image if not present."""
-        try:
-            client = docker.from_env()
-            client.images.get(STRIX_IMAGE)
-            logger.debug("Image %s already available", STRIX_IMAGE)
-        except ImageNotFound:
-            logger.info("Pulling image %s (first run)...", STRIX_IMAGE)
-            client.images.pull(STRIX_IMAGE)
-            logger.info("Image %s pulled successfully", STRIX_IMAGE)
-        except DockerException as e:
-            raise RuntimeError(f"Docker error checking image: {e}") from e
+    async def _ensure_image(self) -> None:
+        """Pull the strix-sandbox Docker image if not present.
 
-    def cleanup_orphaned_containers(self) -> None:
-        """Remove any leftover strix-scan-* containers from previous crashes."""
-        try:
-            client = docker.from_env()
-            containers = client.containers.list(
-                all=True, filters={"label": "strix-scan-id"}
-            )
-            for container in containers:
-                logger.info(
-                    "Cleaning up orphaned container: %s", container.name
+        Runs blocking Docker SDK calls in a thread to avoid stalling the event loop.
+        """
+        def _pull_sync() -> None:
+            try:
+                client = docker.from_env()
+                client.images.get(STRIX_IMAGE)
+                logger.debug("Image %s already available", STRIX_IMAGE)
+            except ImageNotFound:
+                logger.info("Pulling image %s (first run)...", STRIX_IMAGE)
+                client.images.pull(STRIX_IMAGE)
+                logger.info("Image %s pulled successfully", STRIX_IMAGE)
+            except DockerException as e:
+                raise RuntimeError(f"Docker error checking image: {e}") from e
+
+        await asyncio.to_thread(_pull_sync)
+
+    async def cleanup_orphaned_containers(self) -> None:
+        """Remove any leftover strix-scan-* containers from previous crashes.
+
+        Runs blocking Docker SDK calls in a thread to avoid stalling the event loop.
+        """
+        def _cleanup_sync() -> None:
+            try:
+                client = docker.from_env()
+                containers = client.containers.list(
+                    all=True, filters={"label": "strix-scan-id"}
                 )
-                with contextlib.suppress(Exception):
-                    container.stop(timeout=5)
-                with contextlib.suppress(Exception):
-                    container.remove(force=True)
-        except DockerException as e:
-            logger.warning("Failed to clean orphaned containers: %s", e)
+                for container in containers:
+                    logger.info(
+                        "Cleaning up orphaned container: %s", container.name
+                    )
+                    with contextlib.suppress(Exception):
+                        container.stop(timeout=5)
+                    with contextlib.suppress(Exception):
+                        container.remove(force=True)
+            except DockerException as e:
+                logger.warning("Failed to clean orphaned containers: %s", e)
+
+        await asyncio.to_thread(_cleanup_sync)
 
     async def start_scan(
         self,
@@ -108,7 +120,8 @@ class SandboxManager:
                     "Call end_scan first."
                 )
 
-            self._ensure_image()
+            await self.cleanup_orphaned_containers()
+            await self._ensure_image()
 
             runtime = self._ensure_runtime()
             default_agent_id = f"mcp-{scan_id}"
@@ -197,7 +210,7 @@ class SandboxManager:
                     "kwargs": kwargs,
                 },
                 headers={"Authorization": f"Bearer {scan.token}"},
-                timeout=None,
+                timeout=300,
             )
             data = response.json()
         except httpx.ConnectError as e:

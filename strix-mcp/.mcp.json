@@ -1,8 +1,0 @@
-{
-  "mcpServers": {
-    "strix": {
-      "command": "/Users/ms6rb/.pyenv/versions/3.12.0/bin/python",
-      "args": ["-m", "strix_mcp.server"]
-    }
-  }
-}
