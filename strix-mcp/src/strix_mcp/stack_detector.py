@@ -503,7 +503,7 @@ def _detect_package_json_fuzzy(
     if _has_dep(text, "@nestjs/core") or _has_dep(text, "@nestjs/common"):
         framework.append("nestjs")
         found_any = True
-    if _has_dep(text, "express"):
+    if re.search(r'["\s]express["\s,@:]', text, re.IGNORECASE):
         framework.append("express")
         found_any = True
     if re.search(r'["\s]next["\s,@:]', text, re.IGNORECASE):

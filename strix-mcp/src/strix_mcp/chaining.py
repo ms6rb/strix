@@ -241,6 +241,14 @@ def detect_chains(
             if match_b is None and _title_matches(title, rule.finding_b):
                 match_b = report
 
+        # If both sides matched the same report, search for a distinct match_b
+        if match_a is not None and match_b is match_a:
+            match_b = None
+            for report in reports:
+                if report is not match_a and _title_matches(report.get("title", ""), rule.finding_b):
+                    match_b = report
+                    break
+
         # Both sides must match, and they must be different reports
         if match_a is not None and match_b is not None and match_a is not match_b:
             fired.add(rule.chain_name)
