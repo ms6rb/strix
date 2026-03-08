@@ -73,10 +73,12 @@ Call the `get_module` tool for each of these modules and read the full content c
 
 ### Step 2: Dispatch Subagents (Phase 1 — Broad Sweep)
 
-For EACH agent in the plan:
-1. Call `register_agent` to get an isolated `agent_id`
-2. Dispatch a subagent using the Agent tool with the task template below
-3. Dispatch multiple subagents in parallel — they share /workspace and proxy history but have isolated terminal, browser, and Python sessions via their `agent_id`
+**Dispatching agents:**
+For each agent in the plan, call `dispatch_agent(task=..., modules=[...])`. It handles agent registration and returns a complete prompt — pass the `prompt` field directly to the Agent tool. This replaces the manual `register_agent` + prompt composition workflow.
+
+For chain agents, pass `chain_context` with the two findings to include Phase 1 context in the prompt.
+
+Dispatch multiple subagents in parallel — they share /workspace and proxy history but have isolated terminal, browser, and Python sessions via their `agent_id`.
 
 **Important — shared sandbox model:**
 - All subagents operate inside the SAME Docker container
@@ -87,7 +89,13 @@ For EACH agent in the plan:
 
 ### Step 3: Process Results (Phase 2 — Targeted Follow-ups)
 
-As subagents return findings, look for **chaining opportunities** — combinations that escalate severity:
+As subagents return findings, look for **chaining opportunities** — combinations that escalate severity.
+
+The `create_vulnerability_report` tool automatically detects chains as findings come in. When chains are detected, the response includes `chains_detected` with ready-to-use dispatch payloads. Call `dispatch_agent` with the provided task and modules to immediately act on them.
+
+After all Phase 1 agents complete, call `suggest_chains()` to review ALL chaining opportunities — including any that may have been missed.
+
+Use `get_scan_status` to see the `pending_chains` count — if non-zero, chains are waiting for dispatch.
 
 **Chaining Patterns (dispatch follow-up agents for these):**
 
@@ -124,6 +132,10 @@ Include in the agent prompt: "Phase 1 agents found: [finding A summary] and [fin
 After all subagents complete and all findings are reported:
 - Call `end_scan` to tear down the sandbox and get a summary
 - Present the vulnerability summary to the user
+
+### Finding Recall
+
+Findings are written to disk as individual markdown files in `strix_runs/<scan_id>/vulnerabilities/`. Use `get_finding(id)` to read a specific finding when you need full details. `list_vulnerability_reports` returns summaries only (id, title, severity) to save context.
 
 ## Subagent Task Template
 
