@@ -560,7 +560,7 @@ def _detect_package_json_fuzzy(
     if (
         _has_dep(text, "@nestjs/platform-socket.io")
         or _has_dep(text, "socket.io")
-        or _has_dep(text, "ws")
+        or re.search(r'["\s]ws["\s,@]', text, re.IGNORECASE)
     ):
         features.append("websocket")
         found_any = True

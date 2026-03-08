@@ -216,7 +216,10 @@ class SandboxManager:
                 headers={"Authorization": f"Bearer {scan.token}"},
                 timeout=300,
             )
-            data = response.json()
+            try:
+                data = response.json()
+            except Exception:
+                return {"error": f"Sandbox returned non-JSON response (HTTP {response.status_code}): {response.text[:200]}"}
         except httpx.ConnectError as e:
             return {"error": f"Sandbox connection failed: {e}"}
         except httpx.TimeoutException as e:
