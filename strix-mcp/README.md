@@ -127,6 +127,10 @@ Tools implemented by the MCP server for AI agent coordination — not proxied fr
 | `get_module` | Load security knowledge module |
 | `list_modules` | List available knowledge modules |
 | `suggest_chains` | Review vulnerability chaining opportunities |
+| `create_note` | Create structured notes during scans |
+| `list_notes` | List and filter scan notes |
+| `update_note` | Update existing notes |
+| `delete_note` | Delete notes |
 
 ### Not Yet Supported
 
@@ -134,7 +138,6 @@ These Strix tools are not yet available through the MCP server.
 
 | Tool | Category | Notes |
 |------|----------|-------|
-| `create_note` / `list_notes` / `update_note` / `delete_note` | Notes | Structured note-taking during scans |
 | `create_todo` / `list_todos` / `update_todo` / `mark_todo_done` / `mark_todo_pending` / `delete_todo` | Todos | Task tracking within scans |
 | `think` | Analysis | Record reasoning and analysis steps |
 | `web_search` | Reconnaissance | Search via Perplexity AI for security intelligence |
