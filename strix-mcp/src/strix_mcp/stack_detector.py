@@ -611,7 +611,7 @@ def _detect_python(
     if _has_dep(text, "pymongo") or _has_dep(text, "motor"):
         database.append("mongodb")
         found_any = True
-    if re.search(r'["\s]redis["\s,@:]', text, re.IGNORECASE):
+    if _has_dep(text, "redis"):
         database.append("redis")
         found_any = True
 
