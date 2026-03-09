@@ -1,0 +1,17 @@
+services:
+  vulnerable-app:
+    build:
+      context: ./vulnerable_app
+    ports:
+      - "5000:5000"
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:5000/')"]
+      interval: 2s
+      timeout: 5s
+      retries: 10
+
+networks:
+  default:
+    name: strix-test
