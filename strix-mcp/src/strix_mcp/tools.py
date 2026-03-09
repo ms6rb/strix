@@ -605,13 +605,19 @@ def register_tools(mcp: FastMCP, sandbox: SandboxManager) -> None:
 
         # Build prompt first (pure function) — avoids orphaned agent registration on error
         placeholder = "__pending_agent_id__"
-        prompt = build_agent_prompt(
-            task=task,
-            modules=modules,
-            agent_id=placeholder,
-            is_web_only=is_web_only,
-            chain_context=chain_context,
-        )
+        try:
+            prompt = build_agent_prompt(
+                task=task,
+                modules=modules,
+                agent_id=placeholder,
+                is_web_only=is_web_only,
+                chain_context=chain_context,
+            )
+        except KeyError as exc:
+            return json.dumps({
+                "error": f"chain_context is missing required key: {exc}. "
+                         "Expected keys: finding_a, finding_b, chain_name."
+            })
         agent_id = await sandbox.register_agent(task_name=task)
         prompt = prompt.replace(placeholder, agent_id)
         return json.dumps({
