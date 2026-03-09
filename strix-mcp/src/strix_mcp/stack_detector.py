@@ -529,7 +529,7 @@ def _detect_package_json_fuzzy(
     if _has_dep(text, "better-sqlite3"):
         database.append("sqlite")
         found_any = True
-    if _has_dep(text, "ioredis") or re.search(r'["\s]redis["\s,@:]', text, re.IGNORECASE):
+    if _has_dep(text, "ioredis") or _has_dep(text, "@redis/client") or re.search(r'["\s]redis["\s,@:]', text, re.IGNORECASE):
         database.append("redis")
         found_any = True
     if _has_dep(text, "@supabase/supabase-js"):
