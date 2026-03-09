@@ -1050,7 +1050,7 @@ def register_tools(mcp: FastMCP, sandbox: SandboxManager) -> None:
                 "error": f"Invalid category. Must be one of: {', '.join(_VALID_NOTE_CATEGORIES)}",
             })
 
-        note_id = uuid.uuid4().hex[:5]
+        note_id = uuid.uuid4().hex[:8]
         timestamp = datetime.now(UTC).isoformat()
         notes_storage[note_id] = {
             "title": title.strip(),

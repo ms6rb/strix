@@ -597,7 +597,7 @@ def _detect_python(
     if _has_dep(text, "django"):
         framework.append("django")
         found_any = True
-    if re.search(r'["\s]flask["\s,@:]', text, re.IGNORECASE):
+    if _has_dep(text, "flask"):
         framework.append("flask")
         found_any = True
 
