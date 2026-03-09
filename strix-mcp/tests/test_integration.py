@@ -165,7 +165,7 @@ async def test_file_operations(sandbox: SandboxManager):
 async def test_http_requests(sandbox: SandboxManager):
     """Send HTTP requests through the sandbox proxy.
 
-    Requires: vulnerable app running on host port 5000.
+    Requires: vulnerable app running on host port 5001.
     """
     await sandbox.start_scan(targets=[], scan_id="test-http")
 
@@ -174,11 +174,11 @@ async def test_http_requests(sandbox: SandboxManager):
     for host in ["host.docker.internal", "172.17.0.1"]:
         result = await sandbox.proxy_tool("send_request", {
             "method": "GET",
-            "url": f"http://{host}:5000/",
+            "url": f"http://{host}:5001/",
             "timeout": 5,
         })
         if not result.get("error"):
-            target_url = f"http://{host}:5000"
+            target_url = f"http://{host}:5001"
             break
 
     if target_url is None:
