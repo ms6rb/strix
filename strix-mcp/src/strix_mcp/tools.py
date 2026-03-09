@@ -157,7 +157,7 @@ def _get_run_dir(scan_id: str) -> Path:
     """Return strix_runs/<scan_id>/ in cwd, creating if needed."""
     base = (Path.cwd() / "strix_runs").resolve()
     run_dir = (base / Path(scan_id).name).resolve()
-    if not str(run_dir).startswith(str(base) + "/") and run_dir != base:
+    if not str(run_dir).startswith(str(base) + "/"):
         raise ValueError(f"Invalid scan_id: {scan_id!r}")
     run_dir.mkdir(parents=True, exist_ok=True)
     return run_dir

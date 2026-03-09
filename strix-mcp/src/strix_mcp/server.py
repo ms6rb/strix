@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import logging
 
 from fastmcp import FastMCP
@@ -39,7 +40,10 @@ def module_resource(name: str) -> str:
     """Load a specific security knowledge module by name. Each module provides
     exploitation techniques, bypass methods, and validation requirements for
     a vulnerability class (e.g. sql_injection, xss, idor) or technology (e.g. nextjs, graphql)."""
-    return get_module(name)
+    try:
+        return get_module(name)
+    except ValueError as e:
+        return json.dumps({"error": str(e)})
 
 
 def main() -> None:
