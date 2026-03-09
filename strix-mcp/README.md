@@ -106,7 +106,7 @@ These tools are forwarded directly to the Strix sandbox container — same behav
 | `python_action` | Run Python in persistent interpreter sessions | Full |
 | `list_files` | List sandbox workspace files | Full |
 | `search_files` | Search file contents by pattern | Full |
-| `str_replace_editor` | Edit files in sandbox | Partial — str_replace only, no create/view/insert |
+| `str_replace_editor` | Edit files in sandbox | Full |
 | `scope_rules` | Manage proxy scope filtering | Full |
 | `list_sitemap` | View discovered attack surface | Full |
 | `view_sitemap_entry` | Inspect sitemap entry details | Full |
@@ -140,7 +140,6 @@ These Strix tools are not yet available through the MCP server.
 | `web_search` | Reconnaissance | Search via Perplexity AI for security intelligence |
 | `finish_scan` | Completion | Native scan finalization with executive summary, methodology, and recommendations |
 | `create_vulnerability_report` (native) | Reporting | Full CVSS XML breakdown, CWE/CVE, code locations, PoC scripts (MCP uses simplified interface) |
-| `str_replace_editor` create/view/insert | File Editing | MCP only exposes str_replace; create, view, view_range, insert_line not yet proxied |
 | `view_agent_graph` / `create_agent` / `send_message_to_agent` / `agent_finish` / `wait_for_message` | Agent Graph | Native multi-agent orchestration (MCP uses `dispatch_agent` instead) |
 
 ### Resources

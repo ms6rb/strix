@@ -910,23 +910,40 @@ def register_tools(mcp: FastMCP, sandbox: SandboxManager) -> None:
 
     @mcp.tool()
     async def str_replace_editor(
+        command: str,
         file_path: str,
-        old_str: str,
-        new_str: str,
+        file_text: str | None = None,
+        view_range: list[int] | None = None,
+        old_str: str | None = None,
+        new_str: str | None = None,
+        insert_line: int | None = None,
         agent_id: str | None = None,
     ) -> str:
-        """Edit a file in the sandbox by replacing an exact text match.
+        """Edit, view, or create files in the sandbox workspace.
 
-        file_path: path to the file in the sandbox
-        old_str: exact string to find and replace
-        new_str: replacement string
+        command: one of view | create | str_replace | insert | undo_edit
+        file_path: path to file in the sandbox (e.g. "/workspace/app.py")
+        file_text: file content (required for create)
+        view_range: [start_line, end_line] for view (1-indexed, use -1 for EOF)
+        old_str: text to find (required for str_replace)
+        new_str: replacement text (required for insert; optional for str_replace — omit to delete)
+        insert_line: line number to insert after (required for insert)
         agent_id: subagent identifier from dispatch_agent (omit for coordinator)"""
-        result = await sandbox.proxy_tool("str_replace_editor", {
-            "file_path": file_path,
-            "old_str": old_str,
-            "new_str": new_str,
-            **({"agent_id": agent_id} if agent_id else {}),
-        })
+        # Map MCP param "file_path" to upstream sandbox param "path"
+        kwargs: dict[str, Any] = {"command": command, "path": file_path}
+        if file_text is not None:
+            kwargs["file_text"] = file_text
+        if view_range is not None:
+            kwargs["view_range"] = view_range
+        if old_str is not None:
+            kwargs["old_str"] = old_str
+        if new_str is not None:
+            kwargs["new_str"] = new_str
+        if insert_line is not None:
+            kwargs["insert_line"] = insert_line
+        if agent_id:
+            kwargs["agent_id"] = agent_id
+        result = await sandbox.proxy_tool("str_replace_editor", kwargs)
         return json.dumps(result)
 
     @mcp.tool()
