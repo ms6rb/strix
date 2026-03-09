@@ -575,7 +575,7 @@ def _detect_package_json_fuzzy(
         features.append("grpc")
         found_any = True
 
-    if found_any or text.strip():
+    if found_any:
         runtime.append("node")
 
 

@@ -155,8 +155,10 @@ def _deduplicate_reports(
 
 def _get_run_dir(scan_id: str) -> Path:
     """Return strix_runs/<scan_id>/ in cwd, creating if needed."""
-    safe_id = Path(scan_id).name  # strip directory components
-    run_dir = Path.cwd() / "strix_runs" / safe_id
+    base = (Path.cwd() / "strix_runs").resolve()
+    run_dir = (base / Path(scan_id).name).resolve()
+    if not str(run_dir).startswith(str(base) + "/") and run_dir != base:
+        raise ValueError(f"Invalid scan_id: {scan_id!r}")
     run_dir.mkdir(parents=True, exist_ok=True)
     return run_dir
 
@@ -564,7 +566,10 @@ def register_tools(mcp: FastMCP, sandbox: SandboxManager) -> None:
 
         Load relevant modules at the START of testing work before analyzing code or running tests."""
         from . import resources
-        return resources.get_module(name)
+        try:
+            return resources.get_module(name)
+        except ValueError as e:
+            return json.dumps({"error": str(e)})
 
     @mcp.tool()
     async def list_modules(category: str | None = None) -> str:
@@ -595,14 +600,17 @@ def register_tools(mcp: FastMCP, sandbox: SandboxManager) -> None:
         Returns: agent_id, prompt (pass prompt to Agent tool)."""
         from .chaining import build_agent_prompt
 
-        agent_id = await sandbox.register_agent(task_name=task)
+        # Build prompt first (pure function) — avoids orphaned agent registration on error
+        placeholder = "__pending_agent_id__"
         prompt = build_agent_prompt(
             task=task,
             modules=modules,
-            agent_id=agent_id,
+            agent_id=placeholder,
             is_web_only=is_web_only,
             chain_context=chain_context,
         )
+        agent_id = await sandbox.register_agent(task_name=task)
+        prompt = prompt.replace(placeholder, agent_id)
         return json.dumps({
             "agent_id": agent_id,
             "prompt": prompt,
