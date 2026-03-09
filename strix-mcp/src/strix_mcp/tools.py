@@ -155,8 +155,11 @@ def _deduplicate_reports(
 
 def _get_run_dir(scan_id: str) -> Path:
     """Return strix_runs/<scan_id>/ in cwd, creating if needed."""
+    safe_id = Path(scan_id).name
+    if not safe_id or safe_id != scan_id or safe_id in (".", ".."):
+        raise ValueError(f"Invalid scan_id {scan_id!r}: must be a plain name with no path separators")
     base = (Path.cwd() / "strix_runs").resolve()
-    run_dir = (base / Path(scan_id).name).resolve()
+    run_dir = (base / safe_id).resolve()
     if not str(run_dir).startswith(str(base) + "/"):
         raise ValueError(f"Invalid scan_id: {scan_id!r}")
     run_dir.mkdir(parents=True, exist_ok=True)
