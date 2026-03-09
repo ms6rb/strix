@@ -226,6 +226,15 @@ Directories:
 
 Default user: pentester (sudo available)
 
+## Native Agent Capabilities
+
+Your MCP client (Claude Code, Cursor, Windsurf, etc.) provides built-in tools you should use:
+
+- **Web search**: Use your native search tool for CVE lookups, exploit technique research, bypass documentation, and security advisories. No need for a dedicated search tool.
+- **Reasoning**: Use your native thinking/reasoning capability to plan attack strategies, analyze findings, and decide next steps before acting.
+
+These capabilities complement the sandbox tools — use them freely throughout the scan.
+
 ## Efficiency
 
 - Dispatch subagents in parallel when possible

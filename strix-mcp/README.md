@@ -139,11 +139,11 @@ These Strix tools are not yet available through the MCP server.
 | Tool | Category | Notes |
 |------|----------|-------|
 | `create_todo` / `list_todos` / `update_todo` / `mark_todo_done` / `mark_todo_pending` / `delete_todo` | Todos | Task tracking within scans |
-| `think` | Analysis | Record reasoning and analysis steps |
-| `web_search` | Reconnaissance | Search via Perplexity AI for security intelligence |
 | `finish_scan` | Completion | Native scan finalization with executive summary, methodology, and recommendations |
 | `create_vulnerability_report` (native) | Reporting | Full CVSS XML breakdown, CWE/CVE, code locations, PoC scripts (MCP uses simplified interface) |
 | `view_agent_graph` / `create_agent` / `send_message_to_agent` / `agent_finish` / `wait_for_message` | Agent Graph | Native multi-agent orchestration (MCP uses `dispatch_agent` instead) |
+
+> **Note:** `think` and `web_search` are intentionally not proxied — agents should use their native reasoning and web search capabilities instead. See the methodology resource for details.
 
 ### Resources
 
