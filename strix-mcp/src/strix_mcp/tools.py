@@ -337,17 +337,21 @@ def register_tools(mcp: FastMCP, sandbox: SandboxManager) -> None:
             return json.dumps({"status": "no_active_scan"})
 
         elapsed = (datetime.now(UTC) - scan.started_at).total_seconds()
+
+        tracer = get_global_tracer()
+        reports = tracer.get_existing_vulnerabilities() if tracer else []
+
         severity_counts: dict[str, int] = {}
-        for r in vulnerability_reports:
-            sev = r["severity"]
+        for r in reports:
+            sev = r.get("severity", "info")
             severity_counts[sev] = severity_counts.get(sev, 0) + 1
 
         # Count chains detected but not yet dispatched
         from .chaining import detect_chains
-        all_possible = detect_chains(vulnerability_reports, fired=set())
+        all_possible = detect_chains(reports, fired=set())
         pending_chains = [c for c in all_possible if c["chain_name"] not in fired_chains]
 
-        return json.dumps({
+        result = {
             "scan_id": scan.scan_id,
             "status": "running",
             "elapsed_seconds": round(elapsed),
@@ -356,10 +360,15 @@ def register_tools(mcp: FastMCP, sandbox: SandboxManager) -> None:
                 {"id": aid, "task": name}
                 for aid, name in scan.registered_agents.items()
             ],
-            "total_reports": len(vulnerability_reports),
+            "total_reports": len(reports),
             "severity_counts": severity_counts,
             "pending_chains": len(pending_chains),
-        })
+        }
+
+        if tracer:
+            result["tool_executions"] = tracer.get_real_tool_count()
+
+        return json.dumps(result)
 
     @mcp.tool()
     async def create_vulnerability_report(
@@ -381,60 +390,77 @@ def register_tools(mcp: FastMCP, sandbox: SandboxManager) -> None:
 
         Only report validated vulnerabilities with proof of exploitation."""
         severity = _normalize_severity(severity)
+        tracer = get_global_tracer()
+        existing = tracer.get_existing_vulnerabilities() if tracer else []
+
+        # MCP dedup check (title normalization)
         normalized = _normalize_title(title)
-        dup_idx = _find_duplicate(normalized, vulnerability_reports)
+        dup_idx = _find_duplicate(normalized, existing)
 
         if dup_idx is not None:
-            existing = vulnerability_reports[dup_idx]
-            if _SEVERITY_ORDER.index(severity) > _SEVERITY_ORDER.index(_normalize_severity(existing["severity"])):
-                existing["severity"] = severity
-            if affected_endpoint and affected_endpoint not in existing.get("affected_endpoints", []):
-                existing.setdefault("affected_endpoints", []).append(affected_endpoint)
-            if cvss_score is not None and (existing.get("cvss_score") is None or cvss_score > existing["cvss_score"]):
-                existing["cvss_score"] = cvss_score
-            existing["content"] += f"\n\n---\n\n**Additional evidence:**\n{content}"
-            if scan_dir:
-                _write_finding_md(scan_dir, existing)
+            # existing[dup_idx] is a shared reference to the dict in
+            # tracer.vulnerability_reports, so mutations apply in-place.
+            report = existing[dup_idx]
+            if _SEVERITY_ORDER.index(severity) > _SEVERITY_ORDER.index(
+                _normalize_severity(report.get("severity", "info"))
+            ):
+                report["severity"] = severity
+            # Tracer stores body text as "description", not "content"
+            desc = report.get("description", "")
+            report["description"] = desc + f"\n\n---\n\n**Additional evidence:**\n{content}"
+            # Tracer stores "endpoint" as a string; accumulate comma-separated
+            if affected_endpoint:
+                existing_endpoint = report.get("endpoint", "")
+                if existing_endpoint and existing_endpoint != affected_endpoint:
+                    if affected_endpoint not in existing_endpoint:
+                        report["endpoint"] = f"{existing_endpoint}, {affected_endpoint}"
+                elif not existing_endpoint:
+                    report["endpoint"] = affected_endpoint
+            if cvss_score is not None and (report.get("cvss") is None or cvss_score > report["cvss"]):
+                report["cvss"] = cvss_score
+
+            # Write updated finding to disk (Tracer only auto-writes on add, not on merge)
+            if tracer:
+                try:
+                    tracer.save_run_data()
+                except Exception:
+                    pass
 
             # Detect chains after merge
             from .chaining import detect_chains
-            new_chains = detect_chains(vulnerability_reports, fired=fired_chains)
+            new_chains = detect_chains(existing, fired=fired_chains)
 
             result: dict[str, Any] = {
-                "report_id": existing["id"],
-                "title": existing["title"],
-                "severity": existing["severity"],
-                "file": f"strix_runs/{scan_dir.name}/vulnerabilities/{existing['id']}.md" if scan_dir else None,
+                "report_id": report["id"],
+                "title": report["title"],
+                "severity": report.get("severity", "info"),
                 "merged": True,
             }
             if new_chains:
                 result["chains_detected"] = new_chains
             return json.dumps(result)
 
-        report: dict[str, Any] = {
-            "id": f"vuln-{uuid.uuid4().hex[:8]}",
-            "title": title,
-            "content": content,
-            "severity": severity,  # already normalized above
-            "timestamp": datetime.now(UTC).isoformat(),
-        }
-        if affected_endpoint:
-            report["affected_endpoints"] = [affected_endpoint]
-        if cvss_score is not None:
-            report["cvss_score"] = cvss_score
-        vulnerability_reports.append(report)
-        if scan_dir:
-            _write_finding_md(scan_dir, report)
+        # New finding — delegate to Tracer
+        if tracer:
+            report_id = tracer.add_vulnerability_report(
+                title=title,
+                severity=severity,
+                description=content,
+                endpoint=affected_endpoint,
+                cvss=cvss_score,
+            )
+        else:
+            report_id = f"vuln-{uuid.uuid4().hex[:8]}"
 
         # Detect chains after new finding
         from .chaining import detect_chains
-        new_chains = detect_chains(vulnerability_reports, fired=fired_chains)
+        all_reports = tracer.get_existing_vulnerabilities() if tracer else []
+        new_chains = detect_chains(all_reports, fired=fired_chains)
 
         result: dict[str, Any] = {
-            "report_id": report["id"],
+            "report_id": report_id,
             "title": title,
             "severity": severity,
-            "file": f"strix_runs/{scan_dir.name}/vulnerabilities/{report['id']}.md" if scan_dir else None,
             "merged": False,
         }
         if new_chains:
@@ -448,19 +474,24 @@ def register_tools(mcp: FastMCP, sandbox: SandboxManager) -> None:
 
         severity: optional filter — critical | high | medium | low | info (case-insensitive)
 
-        Returns: list of {id, title, severity, affected_endpoints, cvss_score}."""
+        Returns: list of {id, title, severity, endpoint, cvss_score}."""
+        tracer = get_global_tracer()
+        reports = tracer.get_existing_vulnerabilities() if tracer else []
+
         if severity:
-            filtered = [r for r in vulnerability_reports if r["severity"] == _normalize_severity(severity)]
+            filtered = [r for r in reports if _normalize_severity(r.get("severity", "info")) == _normalize_severity(severity)]
         else:
-            filtered = list(vulnerability_reports)
+            filtered = list(reports)
+
         return json.dumps({
             "reports": [
                 {
                     "id": r["id"],
                     "title": r["title"],
-                    "severity": r["severity"],
-                    **({"affected_endpoints": r["affected_endpoints"]} if "affected_endpoints" in r else {}),
-                    **({"cvss_score": r["cvss_score"]} if "cvss_score" in r else {}),
+                    "severity": r.get("severity", "info"),
+                    # Tracer stores "endpoint" (string), not "affected_endpoints" (list)
+                    **({"endpoint": r["endpoint"]} if "endpoint" in r else {}),
+                    **({"cvss_score": r["cvss"]} if "cvss" in r else {}),
                 }
                 for r in filtered
             ],
@@ -474,11 +505,12 @@ def register_tools(mcp: FastMCP, sandbox: SandboxManager) -> None:
         finding_id: the report ID (e.g. "vuln-a1b2c3d4") from list_vulnerability_reports.
 
         Returns the raw markdown content from strix_runs/<scan_id>/vulnerabilities/<id>.md."""
-        if scan_dir is None:
+        tracer = get_global_tracer()
+        if tracer is None:
             return json.dumps({"error": "No active scan."})
 
-        safe_id = Path(finding_id).name  # strip directory components
-        vuln_file = scan_dir / "vulnerabilities" / f"{safe_id}.md"
+        safe_id = Path(finding_id).name
+        vuln_file = tracer.get_run_dir() / "vulnerabilities" / f"{safe_id}.md"
         if not vuln_file.exists():
             return json.dumps({"error": f"Finding '{finding_id}' not found."})
 
@@ -562,8 +594,11 @@ def register_tools(mcp: FastMCP, sandbox: SandboxManager) -> None:
         Each chain includes previously_surfaced (bool) indicating if it was already detected."""
         from .chaining import detect_chains
 
+        tracer = get_global_tracer()
+        reports = tracer.get_existing_vulnerabilities() if tracer else []
+
         # Run detection without modifying fired set (show everything)
-        all_chains = detect_chains(vulnerability_reports, fired=set())
+        all_chains = detect_chains(reports, fired=set())
 
         for chain in all_chains:
             chain["previously_surfaced"] = chain["chain_name"] in fired_chains

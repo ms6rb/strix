@@ -669,3 +669,84 @@ class TestTracerLifecycle:
 
             mock_tracer.save_run_data.assert_called_once_with(mark_complete=True)
             mock_set.assert_called_once_with(None)
+
+
+class TestVulnReportsViaTracer:
+    """Test that vulnerability reports use the global tracer as source of truth."""
+
+    @pytest.mark.asyncio
+    async def test_create_vulnerability_report_uses_tracer(self):
+        """create_vulnerability_report should call tracer.add_vulnerability_report."""
+        from unittest.mock import AsyncMock, MagicMock, patch
+
+        mcp = FastMCP("test")
+        mock_sandbox = MagicMock()
+        mock_sandbox.active_scan = MagicMock()
+        register_tools(mcp, mock_sandbox)
+
+        mock_tracer = MagicMock()
+        mock_tracer.vulnerability_reports = []
+        mock_tracer.get_existing_vulnerabilities.return_value = []
+        mock_tracer.add_vulnerability_report.return_value = "vuln-0001"
+
+        with patch("strix_mcp.tools.get_global_tracer", return_value=mock_tracer):
+            result = await mcp.call_tool("create_vulnerability_report", {
+                "title": "SQL Injection in /api/login",
+                "content": "POST param 'user' is injectable",
+                "severity": "critical",
+            })
+
+        mock_tracer.add_vulnerability_report.assert_called_once()
+        call_kwargs = mock_tracer.add_vulnerability_report.call_args
+        assert call_kwargs.kwargs["title"] == "SQL Injection in /api/login"
+        assert call_kwargs.kwargs["severity"] == "critical"
+        # Verify field mapping: content -> description
+        assert call_kwargs.kwargs["description"] == "POST param 'user' is injectable"
+
+    @pytest.mark.asyncio
+    async def test_list_vulnerability_reports_reads_from_tracer(self):
+        """list_vulnerability_reports should read from tracer.get_existing_vulnerabilities."""
+        from unittest.mock import MagicMock, patch
+
+        mcp = FastMCP("test")
+        mock_sandbox = MagicMock()
+        mock_sandbox.active_scan = MagicMock()
+        register_tools(mcp, mock_sandbox)
+
+        mock_tracer = MagicMock()
+        mock_tracer.get_existing_vulnerabilities.return_value = [
+            {"id": "vuln-0001", "title": "XSS", "severity": "high", "timestamp": "2026-03-14"},
+        ]
+
+        with patch("strix_mcp.tools.get_global_tracer", return_value=mock_tracer):
+            result = await mcp.call_tool("list_vulnerability_reports", {})
+
+        data = json.loads(result.content[0].text)
+        assert data["total"] == 1
+        assert data["reports"][0]["title"] == "XSS"
+
+    @pytest.mark.asyncio
+    async def test_get_scan_status_reads_from_tracer(self):
+        """get_scan_status should read reports from tracer."""
+        from unittest.mock import MagicMock, patch
+
+        mcp = FastMCP("test")
+        mock_sandbox = MagicMock()
+        mock_sandbox.active_scan = MagicMock()
+        mock_sandbox.active_scan.scan_id = "test-scan"
+        mock_sandbox.active_scan.started_at = datetime.now(UTC)
+        mock_sandbox.active_scan.registered_agents = {"mcp-test": "coordinator"}
+        register_tools(mcp, mock_sandbox)
+
+        mock_tracer = MagicMock()
+        mock_tracer.get_existing_vulnerabilities.return_value = [
+            {"id": "v1", "title": "XSS", "severity": "high"},
+        ]
+        mock_tracer.get_real_tool_count.return_value = 5
+
+        with patch("strix_mcp.tools.get_global_tracer", return_value=mock_tracer):
+            result = await mcp.call_tool("get_scan_status", {})
+
+        data = json.loads(result.content[0].text)
+        assert data["total_reports"] == 1
+        assert data["tool_executions"] == 5
