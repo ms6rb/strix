@@ -608,3 +608,64 @@ class TestProxyToolTracing:
             result = await mgr.proxy_tool("terminal_execute", {"command": "whoami"})
 
         assert result == {"output": "hello"}
+
+
+class TestTracerLifecycle:
+    """Test that start_scan creates a Tracer and end_scan finalizes it."""
+
+    @pytest.mark.asyncio
+    async def test_start_scan_creates_global_tracer(self):
+        """start_scan should create a Tracer and set it as global."""
+        from unittest.mock import AsyncMock, MagicMock, patch
+
+        mcp = FastMCP("test")
+        mock_sandbox = MagicMock()
+        mock_sandbox.active_scan = None
+
+        mock_scan_state = MagicMock()
+        mock_scan_state.scan_id = "test-scan"
+        mock_sandbox.start_scan = AsyncMock(return_value=mock_scan_state)
+        mock_sandbox.detect_target_stack = AsyncMock(return_value={
+            "detected_stack": {"runtime": ["node"]},
+            "recommended_plan": [{"task": "test"}],
+        })
+
+        register_tools(mcp, mock_sandbox)
+
+        with patch("strix_mcp.tools.set_global_tracer") as mock_set, \
+             patch("strix_mcp.tools.Tracer") as MockTracer:
+            mock_tracer_instance = MagicMock()
+            MockTracer.return_value = mock_tracer_instance
+
+            result = await mcp.call_tool("start_scan", {
+                "targets": [{"type": "local_code", "value": "/app", "name": "app"}],
+                "scan_id": "test-scan",
+            })
+
+            MockTracer.assert_called_once_with(run_name="test-scan")
+            mock_set.assert_called_once_with(mock_tracer_instance)
+            mock_tracer_instance.set_scan_config.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_end_scan_finalizes_tracer(self):
+        """end_scan should call save_run_data and clear global tracer."""
+        from unittest.mock import AsyncMock, MagicMock, patch
+
+        mcp = FastMCP("test")
+        mock_sandbox = MagicMock()
+        mock_sandbox.active_scan = MagicMock()
+        mock_sandbox.active_scan.scan_id = "test-scan"
+        mock_sandbox.active_scan.started_at = datetime.now(UTC)
+        mock_sandbox.end_scan = AsyncMock()
+
+        register_tools(mcp, mock_sandbox)
+
+        mock_tracer = MagicMock()
+        mock_tracer.vulnerability_reports = []
+
+        with patch("strix_mcp.tools.get_global_tracer", return_value=mock_tracer), \
+             patch("strix_mcp.tools.set_global_tracer") as mock_set:
+            result = await mcp.call_tool("end_scan", {})
+
+            mock_tracer.save_run_data.assert_called_once_with(mark_complete=True)
+            mock_set.assert_called_once_with(None)

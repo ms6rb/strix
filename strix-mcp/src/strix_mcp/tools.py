@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import uuid
 from datetime import UTC, datetime
 from pathlib import Path
@@ -10,6 +11,17 @@ from fastmcp import FastMCP
 from mcp import types
 
 from .sandbox import SandboxManager
+
+try:
+    from strix.telemetry.tracer import Tracer, get_global_tracer, set_global_tracer
+except ImportError:
+    Tracer = None  # type: ignore[assignment,misc]
+    def get_global_tracer():  # type: ignore[misc]  # pragma: no cover
+        return None
+    def set_global_tracer(tracer):  # type: ignore[misc]  # pragma: no cover
+        pass
+
+logger = logging.getLogger(__name__)
 
 # --- Title normalization for deduplication ---
 
@@ -150,106 +162,8 @@ def _deduplicate_reports(
     return list(seen.values())
 
 
-# --- Scan persistence (upstream-compatible strix_runs/ format) ---
-
-
-def _get_run_dir(scan_id: str) -> Path:
-    """Return strix_runs/<scan_id>/ in cwd, creating if needed."""
-    safe_id = Path(scan_id).name
-    if not safe_id or safe_id != scan_id or safe_id in (".", ".."):
-        raise ValueError(f"Invalid scan_id {scan_id!r}: must be a plain name with no path separators")
-    base = (Path.cwd() / "strix_runs").resolve()
-    run_dir = (base / safe_id).resolve()
-    if not str(run_dir).startswith(str(base) + "/"):
-        raise ValueError(f"Invalid scan_id: {scan_id!r}")
-    run_dir.mkdir(parents=True, exist_ok=True)
-    return run_dir
-
-
-def _write_finding_md(run_dir: Path, report: dict[str, Any]) -> None:
-    """Write a finding as an individual markdown file.
-
-    Matches upstream Strix format: strix_runs/<scan>/vulnerabilities/<id>.md
-    Overwrites on merge so the file always reflects current state.
-    """
-    vuln_dir = run_dir / "vulnerabilities"
-    vuln_dir.mkdir(exist_ok=True)
-    vuln_file = vuln_dir / f"{report['id']}.md"
-
-    lines: list[str] = []
-    lines.append(f"# {report.get('title', 'Untitled Vulnerability')}\n")
-    lines.append(f"**ID:** {report['id']}")
-    lines.append(f"**Severity:** {report.get('severity', 'unknown').upper()}")
-    lines.append(f"**Found:** {report.get('timestamp', 'unknown')}")
-
-    if report.get("affected_endpoints"):
-        lines.append(f"**Endpoints:** {', '.join(report['affected_endpoints'])}")
-    if report.get("cvss_score") is not None:
-        lines.append(f"**CVSS:** {report['cvss_score']}")
-
-    lines.append("")
-    lines.append("## Details\n")
-    lines.append(report.get("content", "No details provided."))
-    lines.append("")
-
-    vuln_file.write_text("\n".join(lines))
-
-
-def _write_vuln_csv(run_dir: Path, reports: list[dict[str, Any]]) -> None:
-    """Write vulnerabilities.csv index sorted by severity (critical first)."""
-    import csv
-
-    severity_order = {"critical": 0, "high": 1, "medium": 2, "low": 3, "info": 4}
-    sorted_reports = sorted(
-        reports,
-        key=lambda r: (severity_order.get(r.get("severity", "info"), 5), r.get("timestamp", "")),
-    )
-
-    csv_file = run_dir / "vulnerabilities.csv"
-    with csv_file.open("w", encoding="utf-8", newline="") as f:
-        writer = csv.DictWriter(f, fieldnames=["id", "title", "severity", "timestamp", "file"])
-        writer.writeheader()
-        for r in sorted_reports:
-            writer.writerow({
-                "id": r["id"],
-                "title": r["title"],
-                "severity": r["severity"].upper(),
-                "timestamp": r.get("timestamp", ""),
-                "file": f"vulnerabilities/{r['id']}.md",
-            })
-
-
-def _write_summary_md(run_dir: Path, summary: dict[str, Any]) -> None:
-    """Write a human-readable scan summary as summary.md."""
-    lines: list[str] = []
-    lines.append("# Scan Summary\n")
-
-    unique = summary.get("unique_findings", 0)
-    lines.append(f"**Total unique findings:** {unique}")
-
-    sev = summary.get("severity_counts", {})
-    if sev:
-        lines.append("\n## Severity Breakdown\n")
-        for level in ("critical", "high", "medium", "low", "info"):
-            count = sev.get(level, 0)
-            if count:
-                lines.append(f"- **{level.upper()}:** {count}")
-
-    findings = summary.get("findings", [])
-    if findings:
-        lines.append("\n## Findings\n")
-        lines.append("| ID | Title | Severity |")
-        lines.append("|---|---|---|")
-        for f in findings:
-            lines.append(f"| {f['id']} | {f['title']} | {f['severity'].upper()} |")
-
-    lines.append("")
-    (run_dir / "summary.md").write_text("\n".join(lines))
-
 
 def register_tools(mcp: FastMCP, sandbox: SandboxManager) -> None:
-    vulnerability_reports: list[dict[str, Any]] = []
-    scan_dir: Path | None = None
     fired_chains: set[str] = set()
     notes_storage: dict[str, dict[str, Any]] = {}
 
@@ -325,9 +239,15 @@ def register_tools(mcp: FastMCP, sandbox: SandboxManager) -> None:
                 "recommended_plan": generate_plan(default_stack),
             }
 
-        nonlocal scan_dir
-        scan_dir = _get_run_dir(sid)
-        vulnerability_reports.clear()
+        # Initialize tracer (upstream pattern: entrypoint creates + sets global)
+        if Tracer is not None:
+            try:
+                tracer = Tracer(run_name=sid)
+                set_global_tracer(tracer)
+                tracer.set_scan_config({"targets": targets})
+            except Exception:
+                logger.warning("Failed to initialize tracer, continuing without telemetry")
+
         fired_chains.clear()
         notes_storage.clear()
 
@@ -345,12 +265,13 @@ def register_tools(mcp: FastMCP, sandbox: SandboxManager) -> None:
 
         Deduplicates findings by normalized title (higher severity wins on merge),
         groups by OWASP Top 10 (2021) category, and writes results to disk
-        at strix_runs/<scan_id>/ (vulnerabilities/*.md, vulnerabilities.csv, summary.md).
+        via the upstream Tracer (vulnerabilities/*.md, vulnerabilities.csv, penetration_test_report.md).
 
         Returns: unique_findings count, severity_counts, findings_by_category."""
-        nonlocal scan_dir
-        unique = _deduplicate_reports(vulnerability_reports)
-        total_filed = len(vulnerability_reports)
+        tracer = get_global_tracer()
+        reports = tracer.vulnerability_reports if tracer else []
+        unique = _deduplicate_reports(reports)
+        total_filed = len(reports)
         duplicates_merged = total_filed - len(unique)
 
         severity_counts: dict[str, int] = {}
@@ -368,10 +289,13 @@ def register_tools(mcp: FastMCP, sandbox: SandboxManager) -> None:
                 "title": r["title"],
                 "severity": r.get("severity", "info"),
             }
-            if "affected_endpoints" in r:
-                entry["affected_endpoints"] = r["affected_endpoints"]
-            if "cvss_score" in r:
-                entry["cvss_score"] = r["cvss_score"]
+            # Tracer stores "endpoint" (string); check both for robustness
+            endpoint = r.get("endpoint") or r.get("affected_endpoint")
+            if endpoint:
+                entry["endpoint"] = endpoint
+            cvss = r.get("cvss") or r.get("cvss_score")
+            if cvss is not None:
+                entry["cvss_score"] = cvss
             findings_by_category[category].append(entry)
 
         summary = {
@@ -387,17 +311,18 @@ def register_tools(mcp: FastMCP, sandbox: SandboxManager) -> None:
                 for r in unique
             ],
         }
-        if scan_dir:
-            _write_vuln_csv(scan_dir, unique)
-            _write_summary_md(scan_dir, summary)
+
+        # Finalize tracer — writes markdown, CSV, JSONL events
+        if tracer:
+            try:
+                tracer.save_run_data(mark_complete=True)
+            except Exception:
+                logger.warning("Failed to save tracer run data")
+            set_global_tracer(None)  # type: ignore[arg-type]
 
         await sandbox.end_scan()
-
-        # Clear in-memory state so stale data doesn't leak into the next scan
-        vulnerability_reports.clear()
         fired_chains.clear()
         notes_storage.clear()
-        scan_dir = None
 
         return json.dumps(summary)
 
