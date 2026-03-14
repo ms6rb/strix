@@ -10,6 +10,13 @@
 
 **Test command:** `cd strix-mcp && python -m pytest tests/ -v --tb=short -o "addopts=" --ignore=tests/test_integration.py`
 
+**Field name mapping (MCP → upstream Tracer):**
+- `content` → `description` (finding body text)
+- `affected_endpoint` / `affected_endpoints` → `endpoint` (singular string in Tracer)
+- `cvss_score` → `cvss` (float)
+
+These differences affect dedup merge logic, `_deduplicate_reports`, `end_scan` summary, and `list_vulnerability_reports`.
+
 ---
 
 ### Task 1: Add Tracer to proxy_tool for tool execution logging
@@ -342,8 +349,12 @@ In `strix-mcp/src/strix_mcp/tools.py`, add imports at top (after existing import
 ```python
 import logging
 
+from strix.telemetry.tracer import Tracer, get_global_tracer, set_global_tracer
+
 logger = logging.getLogger(__name__)
 ```
+
+This follows the same top-level import pattern used in `sandbox.py`. All local `from strix.telemetry.tracer import ...` statements inside function bodies are unnecessary after this.
 
 Remove these functions entirely (lines 156-247):
 - `_get_run_dir` (lines 156-166)
@@ -358,7 +369,6 @@ Replace `start_scan` tool body — after creating the scan via `sandbox.start_sc
 ```python
         # Initialize tracer (upstream pattern: entrypoint creates + sets global)
         try:
-            from strix.telemetry.tracer import Tracer, set_global_tracer
             tracer = Tracer(run_name=sid)
             set_global_tracer(tracer)
             tracer.set_scan_config({"targets": targets})
@@ -372,8 +382,6 @@ Replace `start_scan` tool body — after creating the scan via `sandbox.start_sc
 Replace `end_scan` tool body:
 
 ```python
-        from strix.telemetry.tracer import get_global_tracer, set_global_tracer
-
         tracer = get_global_tracer()
         reports = tracer.vulnerability_reports if tracer else []
         unique = _deduplicate_reports(reports)
@@ -395,10 +403,13 @@ Replace `end_scan` tool body:
                 "title": r["title"],
                 "severity": r.get("severity", "info"),
             }
-            if "affected_endpoints" in r:
-                entry["affected_endpoints"] = r["affected_endpoints"]
-            if "cvss_score" in r or "cvss" in r:
-                entry["cvss_score"] = r.get("cvss_score") or r.get("cvss")
+            # Tracer stores "endpoint" (string); check both for robustness
+            endpoint = r.get("endpoint") or r.get("affected_endpoint")
+            if endpoint:
+                entry["endpoint"] = endpoint
+            cvss = r.get("cvss") or r.get("cvss_score")
+            if cvss is not None:
+                entry["cvss_score"] = cvss
             findings_by_category[category].append(entry)
 
         summary = {
@@ -421,7 +432,9 @@ Replace `end_scan` tool body:
                 tracer.save_run_data(mark_complete=True)
             except Exception:
                 logger.warning("Failed to save tracer run data")
-            set_global_tracer(None)
+            # Clear global tracer (runtime-safe, type annotation is non-optional
+            # but upstream pattern uses None to reset)
+            set_global_tracer(None)  # type: ignore[arg-type]
 
         await sandbox.end_scan()
         fired_chains.clear()
@@ -536,8 +549,6 @@ In `create_vulnerability_report`, replace the body:
         cvss_score: float | None = None,
     ) -> str:
         """File a confirmed vulnerability finding. ...(keep existing docstring)..."""
-        from strix.telemetry.tracer import get_global_tracer
-
         severity = _normalize_severity(severity)
         tracer = get_global_tracer()
         existing = tracer.get_existing_vulnerabilities() if tracer else []
@@ -547,20 +558,35 @@ In `create_vulnerability_report`, replace the body:
         dup_idx = _find_duplicate(normalized, existing)
 
         if dup_idx is not None:
+            # existing[dup_idx] is a shared reference to the dict in
+            # tracer.vulnerability_reports, so mutations apply in-place.
             report = existing[dup_idx]
             if _SEVERITY_ORDER.index(severity) > _SEVERITY_ORDER.index(
                 _normalize_severity(report.get("severity", "info"))
             ):
                 report["severity"] = severity
+            # Tracer stores body text as "description", not "content"
             desc = report.get("description", "")
             report["description"] = desc + f"\n\n---\n\n**Additional evidence:**\n{content}"
+            # Tracer stores "endpoint" as a string; for merges we accumulate
+            # a list under a separate key to track multiple endpoints
             if affected_endpoint:
-                endpoints = report.get("affected_endpoints", [])
-                if affected_endpoint not in endpoints:
-                    endpoints.append(affected_endpoint)
-                    report["affected_endpoints"] = endpoints
+                existing_endpoint = report.get("endpoint", "")
+                if existing_endpoint and existing_endpoint != affected_endpoint:
+                    # Store as comma-separated in the endpoint field
+                    if affected_endpoint not in existing_endpoint:
+                        report["endpoint"] = f"{existing_endpoint}, {affected_endpoint}"
+                elif not existing_endpoint:
+                    report["endpoint"] = affected_endpoint
             if cvss_score is not None and (report.get("cvss") is None or cvss_score > report["cvss"]):
                 report["cvss"] = cvss_score
+
+            # Write updated finding to disk (Tracer only auto-writes on add, not on merge)
+            if tracer:
+                try:
+                    tracer.save_run_data()
+                except Exception:
+                    pass
 
             # Detect chains after merge
             from .chaining import detect_chains
@@ -610,8 +636,6 @@ In `list_vulnerability_reports`, replace the body:
     @mcp.tool()
     async def list_vulnerability_reports(severity: str | None = None) -> str:
         """...(keep existing docstring)..."""
-        from strix.telemetry.tracer import get_global_tracer
-
         tracer = get_global_tracer()
         reports = tracer.get_existing_vulnerabilities() if tracer else []
 
@@ -626,8 +650,9 @@ In `list_vulnerability_reports`, replace the body:
                     "id": r["id"],
                     "title": r["title"],
                     "severity": r.get("severity", "info"),
-                    **({"affected_endpoints": r["affected_endpoints"]} if "affected_endpoints" in r else {}),
-                    **({"cvss_score": r.get("cvss_score") or r.get("cvss")} if "cvss_score" in r or "cvss" in r else {}),
+                    # Tracer stores "endpoint" (string), not "affected_endpoints" (list)
+                    **({"endpoint": r["endpoint"]} if "endpoint" in r else {}),
+                    **({"cvss_score": r["cvss"]} if "cvss" in r else {}),
                 }
                 for r in filtered
             ],
@@ -641,8 +666,6 @@ In `get_finding`, replace the body:
     @mcp.tool()
     async def get_finding(finding_id: str) -> str:
         """...(keep existing docstring)..."""
-        from strix.telemetry.tracer import get_global_tracer
-
         tracer = get_global_tracer()
         if tracer is None:
             return json.dumps({"error": "No active scan."})
@@ -658,8 +681,6 @@ In `get_finding`, replace the body:
 In `get_scan_status`, replace `vulnerability_reports` references:
 
 ```python
-        from strix.telemetry.tracer import get_global_tracer
-
         tracer = get_global_tracer()
         reports = tracer.get_existing_vulnerabilities() if tracer else []
 
@@ -700,8 +721,6 @@ And enrich with tracer data:
 In `suggest_chains`, replace `vulnerability_reports` reference:
 
 ```python
-        from strix.telemetry.tracer import get_global_tracer
-
         tracer = get_global_tracer()
         reports = tracer.get_existing_vulnerabilities() if tracer else []
 
@@ -783,7 +802,6 @@ In `dispatch_agent` tool body, after `agent_id = await sandbox.register_agent(ta
 
 ```python
         # Log agent creation to tracer
-        from strix.telemetry.tracer import get_global_tracer
         tracer = get_global_tracer()
         if tracer:
             try:
@@ -811,26 +829,47 @@ git commit -m "feat(mcp): log agent creation in dispatch_agent"
 
 ---
 
-### Task 5: Update and clean up existing tests
+### Task 5: Update _deduplicate_reports, remove stale tests, fix remaining tests
 
-Remove tests for deleted functions (`_get_run_dir`, `_write_finding_md`, `_write_vuln_csv`, `_write_summary_md`). Update tests that referenced `vulnerability_reports` closure variable to use tracer mocks.
+Three things: (1) update `_deduplicate_reports` to use Tracer field names, (2) remove tests for deleted functions, (3) update tests that need tracer mocks.
 
 **Files:**
+- Modify: `strix-mcp/src/strix_mcp/tools.py` (`_deduplicate_reports`)
 - Modify: `strix-mcp/tests/test_tools.py`
+
+**Step 0: Update `_deduplicate_reports` for Tracer field names**
+
+The upstream Tracer stores body text as `description`, not `content`. Update `_deduplicate_reports` (currently at lines 133-150 of tools.py):
+
+```python
+def _deduplicate_reports(
+    reports: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    """Deduplicate reports by normalized title, keeping the richest entry."""
+    seen: dict[str, dict[str, Any]] = {}
+
+    for report in reports:
+        key = _normalize_title(report["title"])
+        if key in seen:
+            existing = seen[key]
+            if _SEVERITY_ORDER.index(_normalize_severity(report.get("severity", "info"))) > _SEVERITY_ORDER.index(_normalize_severity(existing.get("severity", "info"))):
+                existing["severity"] = _normalize_severity(report["severity"])
+            # Tracer stores body text as "description", not "content"
+            new_desc = report.get("description", "")
+            existing_desc = existing.get("description", "")
+            if new_desc and new_desc not in existing_desc:
+                existing["description"] = existing_desc + f"\n\n---\n\n{new_desc}"
+        else:
+            seen[key] = dict(report)
+
+    return list(seen.values())
+```
 
 **Step 1: Identify tests to remove**
 
 Delete these test classes/methods that test removed functions:
-- `TestStrixRunsPersistence::test_get_run_dir_creates_structure`
-- `TestStrixRunsPersistence::test_write_finding_md_creates_file`
-- `TestStrixRunsPersistence::test_write_finding_md_includes_optional_fields`
-- `TestStrixRunsPersistence::test_write_vuln_csv_creates_sorted_index`
-- `TestStrixRunsPersistence::test_write_summary_md`
-- `TestStrixRunsPersistence::test_get_run_dir_rejects_path_traversal`
-- `TestStrixRunsPersistence::test_get_run_dir_rejects_dot_dot`
-- `TestStrixRunsPersistence::test_get_run_dir_rejects_empty`
-- `TestStrixRunsPersistence::test_get_run_dir_rejects_dot`
-- `TestStrixRunsPersistence::test_get_run_dir_rejects_slash_prefix`
+- Entire `TestStrixRunsPersistence` class (tests `_get_run_dir`, `_write_finding_md`, `_write_vuln_csv`, `_write_summary_md`)
+- Entire `TestGetFinding` class (imports and calls `_write_finding_md` which is deleted)
 
 Remove the import line:
 ```python
@@ -840,6 +879,12 @@ Replace with (keep only what's still used):
 ```python
 from strix_mcp.tools import _normalize_title, _find_duplicate, _categorize_owasp, _deduplicate_reports, _normalize_severity, register_tools
 ```
+
+**Step 1a: Update `TestDeduplicateReports` test data**
+
+Tests in `TestDeduplicateReports` use `content` as the field key. Update them to use `description` to match Tracer's format:
+- Replace `"content": "..."` with `"description": "..."` in test report dicts
+- Update assertions that check merged content to look for `"description"` key
 
 **Step 2: Update TestCreateVulnerabilityReport and TestNotesTools**
 
