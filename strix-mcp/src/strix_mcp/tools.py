@@ -154,8 +154,10 @@ def _deduplicate_reports(
             existing = seen[key]
             if _SEVERITY_ORDER.index(_normalize_severity(report.get("severity", "info"))) > _SEVERITY_ORDER.index(_normalize_severity(existing.get("severity", "info"))):
                 existing["severity"] = _normalize_severity(report["severity"])
-            if report.get("content", "") not in existing.get("content", ""):
-                existing["content"] = existing.get("content", "") + f"\n\n---\n\n{report.get('content', '')}"
+            new_desc = report.get("description", "")
+            existing_desc = existing.get("description", "")
+            if new_desc and new_desc not in existing_desc:
+                existing["description"] = existing_desc + f"\n\n---\n\n{new_desc}"
         else:
             seen[key] = dict(report)
 
