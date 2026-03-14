@@ -3,7 +3,7 @@ import json
 from datetime import UTC, datetime
 from pathlib import Path
 
-from strix_mcp.sandbox import ScanState
+from strix_mcp.sandbox import SandboxManager, ScanState
 
 
 class TestScanState:
@@ -482,3 +482,129 @@ class TestNotesTools:
         })))
         assert result["success"] is False
         assert "not found" in result["error"].lower()
+
+
+class TestProxyToolTracing:
+    """Test that proxy_tool logs to the global tracer."""
+
+    @pytest.mark.asyncio
+    async def test_proxy_tool_logs_execution_when_tracer_active(self):
+        """proxy_tool should call log_tool_execution_start and update_tool_execution."""
+        from unittest.mock import AsyncMock, MagicMock, patch
+
+        mgr = SandboxManager()
+        mgr._active_scan = ScanState(
+            scan_id="test", workspace_id="ws-1",
+            api_url="http://localhost:8080", token="tok",
+            port=8080, default_agent_id="mcp-test",
+        )
+
+        mock_tracer = MagicMock()
+        mock_tracer.log_tool_execution_start.return_value = 42
+
+        mock_response = MagicMock()
+        mock_response.status_code = 200
+        mock_response.json.return_value = {"result": {"output": "hello"}}
+
+        mock_client = AsyncMock()
+        mock_client.post.return_value = mock_response
+        mock_client.is_closed = False
+        mgr._http_client = mock_client
+
+        with patch("strix_mcp.sandbox.get_global_tracer", return_value=mock_tracer):
+            result = await mgr.proxy_tool("terminal_execute", {"command": "whoami", "timeout": 10})
+
+        mock_tracer.log_tool_execution_start.assert_called_once_with(
+            agent_id="mcp-test",
+            tool_name="terminal_execute",
+            args={"command": "whoami", "timeout": 10},
+        )
+        mock_tracer.update_tool_execution.assert_called_once_with(
+            42, "completed", {"output": "hello"},
+        )
+
+    @pytest.mark.asyncio
+    async def test_proxy_tool_works_without_tracer(self):
+        """proxy_tool should work normally when no tracer is active."""
+        from unittest.mock import AsyncMock, MagicMock, patch
+
+        mgr = SandboxManager()
+        mgr._active_scan = ScanState(
+            scan_id="test", workspace_id="ws-1",
+            api_url="http://localhost:8080", token="tok",
+            port=8080, default_agent_id="mcp-test",
+        )
+
+        mock_response = MagicMock()
+        mock_response.status_code = 200
+        mock_response.json.return_value = {"result": {"output": "hello"}}
+
+        mock_client = AsyncMock()
+        mock_client.post.return_value = mock_response
+        mock_client.is_closed = False
+        mgr._http_client = mock_client
+
+        with patch("strix_mcp.sandbox.get_global_tracer", return_value=None):
+            result = await mgr.proxy_tool("terminal_execute", {"command": "whoami"})
+
+        assert result == {"output": "hello"}
+
+    @pytest.mark.asyncio
+    async def test_proxy_tool_logs_error_status_on_failure(self):
+        """proxy_tool should log error status when sandbox returns an error."""
+        from unittest.mock import AsyncMock, MagicMock, patch
+
+        mgr = SandboxManager()
+        mgr._active_scan = ScanState(
+            scan_id="test", workspace_id="ws-1",
+            api_url="http://localhost:8080", token="tok",
+            port=8080, default_agent_id="mcp-test",
+        )
+
+        mock_tracer = MagicMock()
+        mock_tracer.log_tool_execution_start.return_value = 7
+
+        mock_response = MagicMock()
+        mock_response.status_code = 200
+        mock_response.json.return_value = {"error": "command not found"}
+
+        mock_client = AsyncMock()
+        mock_client.post.return_value = mock_response
+        mock_client.is_closed = False
+        mgr._http_client = mock_client
+
+        with patch("strix_mcp.sandbox.get_global_tracer", return_value=mock_tracer):
+            result = await mgr.proxy_tool("terminal_execute", {"command": "bad"})
+
+        mock_tracer.update_tool_execution.assert_called_once_with(
+            7, "error", {"error": "command not found"},
+        )
+
+    @pytest.mark.asyncio
+    async def test_proxy_tool_tracer_exception_does_not_block(self):
+        """If tracer raises, the tool call should still succeed."""
+        from unittest.mock import AsyncMock, MagicMock, patch
+
+        mgr = SandboxManager()
+        mgr._active_scan = ScanState(
+            scan_id="test", workspace_id="ws-1",
+            api_url="http://localhost:8080", token="tok",
+            port=8080, default_agent_id="mcp-test",
+        )
+
+        mock_tracer = MagicMock()
+        mock_tracer.log_tool_execution_start.side_effect = RuntimeError("tracer broke")
+
+        mock_response = MagicMock()
+        mock_response.status_code = 200
+        mock_response.json.return_value = {"result": {"output": "hello"}}
+
+        mock_client = AsyncMock()
+        mock_client.post.return_value = mock_response
+        mock_client.is_closed = False
+        mgr._http_client = mock_client
+
+        with patch("strix_mcp.sandbox.get_global_tracer", return_value=mock_tracer):
+            result = await mgr.proxy_tool("terminal_execute", {"command": "whoami"})
+
+        assert result == {"output": "hello"}

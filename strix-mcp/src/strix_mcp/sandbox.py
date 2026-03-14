@@ -11,6 +11,11 @@ from typing import Any
 import docker
 import httpx
 from docker.errors import DockerException, ImageNotFound
+try:
+    from strix.telemetry.tracer import get_global_tracer
+except ImportError:  # pragma: no cover - telemetry deps may be absent
+    def get_global_tracer():  # type: ignore[misc]
+        return None
 
 logger = logging.getLogger(__name__)
 
@@ -203,6 +208,20 @@ class SandboxManager:
             return {"error": "No active scan. Call start_scan first."}
 
         agent_id = kwargs.pop("agent_id", scan.default_agent_id)
+
+        # Log tool execution start
+        tracer = get_global_tracer()
+        execution_id = None
+        if tracer:
+            try:
+                execution_id = tracer.log_tool_execution_start(
+                    agent_id=agent_id,
+                    tool_name=tool_name,
+                    args=kwargs,
+                )
+            except Exception:
+                execution_id = None
+
         client = self._ensure_http_client()
 
         try:
@@ -217,19 +236,33 @@ class SandboxManager:
                 timeout=300,
             )
             if response.status_code >= 400:
-                return {"error": f"Sandbox request failed (HTTP {response.status_code}): {response.text[:200]}"}
-            try:
-                data = response.json()
-            except Exception:
-                return {"error": f"Sandbox returned non-JSON response (HTTP {response.status_code}): {response.text[:200]}"}
-        except httpx.ConnectError as e:
-            return {"error": f"Sandbox connection failed: {e}"}
-        except httpx.TimeoutException as e:
-            return {"error": f"Sandbox request timed out: {e}"}
+                result = {"error": f"Sandbox request failed (HTTP {response.status_code}): {response.text[:200]}"}
+            else:
+                try:
+                    data = response.json()
+                except Exception:
+                    result = {"error": f"Sandbox returned non-JSON response (HTTP {response.status_code}): {response.text[:200]}"}
+                    data = None
 
-        if data.get("error"):
-            return {"error": data["error"]}
-        return data.get("result", data)
+                if data is not None:
+                    if data.get("error"):
+                        result = {"error": data["error"]}
+                    else:
+                        result = data.get("result", data)
+        except httpx.ConnectError as e:
+            result = {"error": f"Sandbox connection failed: {e}"}
+        except httpx.TimeoutException as e:
+            result = {"error": f"Sandbox request timed out: {e}"}
+
+        # Log tool execution completion
+        if tracer and execution_id is not None:
+            try:
+                status = "error" if isinstance(result, dict) and result.get("error") else "completed"
+                tracer.update_tool_execution(execution_id, status, result)
+            except Exception:
+                pass
+
+        return result
 
     # --- Stack Detection ---
 
