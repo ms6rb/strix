@@ -577,6 +577,20 @@ def register_tools(mcp: FastMCP, sandbox: SandboxManager) -> None:
             })
         agent_id = await sandbox.register_agent(task_name=task)
         prompt = prompt.replace(placeholder, agent_id)
+
+        # Log agent creation to tracer
+        tracer = get_global_tracer()
+        if tracer:
+            try:
+                tracer.log_agent_creation(
+                    agent_id=agent_id,
+                    name="mcp_subagent",
+                    task=task,
+                    parent_id=sandbox.active_scan.default_agent_id if sandbox.active_scan else None,
+                )
+            except Exception:
+                pass
+
         return json.dumps({
             "agent_id": agent_id,
             "prompt": prompt,

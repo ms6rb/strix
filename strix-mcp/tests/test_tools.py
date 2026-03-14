@@ -750,3 +750,34 @@ class TestVulnReportsViaTracer:
         data = json.loads(result.content[0].text)
         assert data["total_reports"] == 1
         assert data["tool_executions"] == 5
+
+
+class TestDispatchAgentTracing:
+    """Test that dispatch_agent logs agent creation to the tracer."""
+
+    @pytest.mark.asyncio
+    async def test_dispatch_agent_logs_creation(self):
+        """dispatch_agent should call tracer.log_agent_creation after registration."""
+        from unittest.mock import AsyncMock, MagicMock, patch
+
+        mcp = FastMCP("test")
+        mock_sandbox = MagicMock()
+        mock_sandbox.active_scan = MagicMock()
+        mock_sandbox.active_scan.default_agent_id = "mcp-test"
+        mock_sandbox.register_agent = AsyncMock(return_value="mcp_agent_1")
+        register_tools(mcp, mock_sandbox)
+
+        mock_tracer = MagicMock()
+
+        with patch("strix_mcp.tools.get_global_tracer", return_value=mock_tracer):
+            result = await mcp.call_tool("dispatch_agent", {
+                "task": "Test IDOR on /api/users",
+                "modules": ["idor"],
+            })
+
+        mock_tracer.log_agent_creation.assert_called_once_with(
+            agent_id="mcp_agent_1",
+            name="mcp_subagent",
+            task="Test IDOR on /api/users",
+            parent_id="mcp-test",
+        )
