@@ -271,7 +271,7 @@ def register_tools(mcp: FastMCP, sandbox: SandboxManager) -> None:
 
         Returns: unique_findings count, severity_counts, findings_by_category."""
         tracer = get_global_tracer()
-        reports = tracer.vulnerability_reports if tracer else []
+        reports = tracer.get_existing_vulnerabilities() if tracer else []
         unique = _deduplicate_reports(reports)
         total_filed = len(reports)
         duplicates_merged = total_filed - len(unique)
@@ -314,7 +314,11 @@ def register_tools(mcp: FastMCP, sandbox: SandboxManager) -> None:
             ],
         }
 
-        # Finalize tracer — writes markdown, CSV, JSONL events
+        await sandbox.end_scan()
+
+        # Finalize tracer after sandbox teardown — if we clear the tracer
+        # before end_scan and destroy_sandbox fails, the session enters a
+        # split state (tracer gone but scan still "active").
         if tracer:
             try:
                 tracer.save_run_data(mark_complete=True)
@@ -322,7 +326,6 @@ def register_tools(mcp: FastMCP, sandbox: SandboxManager) -> None:
                 logger.warning("Failed to save tracer run data")
             set_global_tracer(None)  # type: ignore[arg-type]
 
-        await sandbox.end_scan()
         fired_chains.clear()
         notes_storage.clear()
 
