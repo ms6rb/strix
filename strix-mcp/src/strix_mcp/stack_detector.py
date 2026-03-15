@@ -438,7 +438,7 @@ def _detect_package_json_exact(
     if _has_exact_dep(dep_keys, "better-sqlite3"):
         database.append("sqlite")
         found_any = True
-    if _has_exact_dep(dep_keys, "ioredis") or _has_exact_dep(dep_keys, "redis"):
+    if _has_exact_dep(dep_keys, "ioredis") or _has_exact_dep(dep_keys, "redis") or _has_exact_dep(dep_keys, "@redis/client"):
         database.append("redis")
         found_any = True
     if _has_exact_dep(dep_keys, "@supabase/supabase-js"):
