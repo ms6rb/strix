@@ -135,6 +135,8 @@ def _categorize_owasp(title: str) -> str:
 
 _SEVERITY_ORDER = ["info", "low", "medium", "high", "critical"]
 
+VALID_NOTE_CATEGORIES = ["general", "findings", "methodology", "questions", "plan", "recon"]
+
 
 def _normalize_severity(severity: str) -> str:
     """Normalize severity to a known value, defaulting to 'info'."""
@@ -1018,8 +1020,6 @@ def register_tools(mcp: FastMCP, sandbox: SandboxManager) -> None:
 
     # --- Notes Tools (MCP-side, not proxied) ---
 
-    _VALID_NOTE_CATEGORIES = ["general", "findings", "methodology", "questions", "plan"]
-
     @mcp.tool()
     async def create_note(
         title: str,
@@ -1032,7 +1032,7 @@ def register_tools(mcp: FastMCP, sandbox: SandboxManager) -> None:
 
         title: note title
         content: note body text
-        category: general | findings | methodology | questions | plan
+        category: general | findings | methodology | questions | plan | recon
         tags: optional list of tags for filtering
 
         Returns: note_id on success."""
@@ -1040,10 +1040,10 @@ def register_tools(mcp: FastMCP, sandbox: SandboxManager) -> None:
             return json.dumps({"success": False, "error": "Title cannot be empty"})
         if not content or not content.strip():
             return json.dumps({"success": False, "error": "Content cannot be empty"})
-        if category not in _VALID_NOTE_CATEGORIES:
+        if category not in VALID_NOTE_CATEGORIES:
             return json.dumps({
                 "success": False,
-                "error": f"Invalid category. Must be one of: {', '.join(_VALID_NOTE_CATEGORIES)}",
+                "error": f"Invalid category. Must be one of: {', '.join(VALID_NOTE_CATEGORIES)}",
             })
 
         note_id = uuid.uuid4().hex[:8]

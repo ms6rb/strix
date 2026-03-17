@@ -636,3 +636,10 @@ class TestDispatchAgentTracing:
             task="Test IDOR on /api/users",
             parent_id="mcp-test",
         )
+
+
+class TestReconNoteCategory:
+    def test_recon_is_valid_category(self):
+        """The 'recon' category should be accepted by the notes system."""
+        from strix_mcp.tools import VALID_NOTE_CATEGORIES
+        assert "recon" in VALID_NOTE_CATEGORIES
