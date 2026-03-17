@@ -49,11 +49,15 @@ Based on target type, the coordinator dispatches 1-3 recon agents in parallel:
 |---|---|
 | **web app** | 1. Surface discovery (ffuf + source maps + wayback) 2. Infrastructure recon (nmap + nuclei) |
 | **domain** | 1. Subdomain enumeration (subfinder + httpx) 2. Surface discovery (ffuf on live hosts) 3. Infrastructure recon (nmap + nuclei) |
-| **local code** | 1. Nuclei scan (after app is started) |
+| **local code** | 1. Surface discovery (ffuf + source maps against running app) 2. Infrastructure recon (nmap + nuclei against running app) |
+
+**Note on local code targets:** Once the application is started, it is a running web service and benefits from the same recon as web targets. Source code provides the codebase view; recon provides the runtime view (exposed endpoints, debug ports, misconfigurations that only appear at runtime).
 
 ### Recon-to-Vuln Handoff
 
 Recon agents write structured notes via `create_note(category="recon")`. The coordinator reads them after Phase 0 completes and adjusts Phase 1 dispatch based on discoveries.
+
+**Required change:** Add `"recon"` to `_VALID_NOTE_CATEGORIES` in `tools.py` (currently `["general", "findings", "methodology", "questions", "plan"]`).
 
 Structured note format:
 ```
@@ -235,6 +239,8 @@ Add recon references to the web-only agent approach section, noting that recon a
 - Deep link analysis: `adb shell am start -d "scheme://host/path"`
 - Output: structured note with discovered endpoints, keys, and attack surface
 
+**Note:** This module has no corresponding recon agent template or auto-dispatch trigger. Mobile APK analysis is manual/on-demand only — the coordinator or user invokes it when the target has a mobile app. It is not part of the automated Phase 0 flow because APK download requires manual steps (browsing APKPure, selecting the right version).
+
 ---
 
 ## Component 3: MCP Tools
@@ -275,8 +281,12 @@ async def nuclei_scan(
           -jsonl -o /tmp/nuclei_results.jsonl -silent
    ```
    If `templates` provided: add `-t {template}` for each
-3. Execute via `sandbox.proxy_tool("terminal_execute", {"command": cmd, "timeout": 300})`
+3. Execute via `sandbox.proxy_tool("terminal_execute", {"command": cmd, "timeout": timeout})`
+   - Default `timeout` parameter: 600 seconds (10 minutes)
+   - `terminal_execute` timeout behavior: stops waiting for output but the nuclei process continues running in the sandbox. This is important — a timeout does NOT kill nuclei.
 4. Read results file via `sandbox.proxy_tool("terminal_execute", {"command": "cat /tmp/nuclei_results.jsonl"})`
+   - If step 3 timed out, the results file contains partial results (nuclei writes incrementally)
+   - If the file doesn't exist yet, return `{total_findings: 0, timed_out: true}`
 5. Parse each JSONL line:
    ```json
    {
@@ -286,12 +296,14 @@ async def nuclei_scan(
      "info": {"name": "Git Config File", "description": "..."}
    }
    ```
-6. For each finding, call the internal report filing logic:
+6. For each finding, file directly via the tracer (not the MCP tool):
+   - Call `tracer.add_vulnerability_report(title, severity, description)` directly
+   - This avoids JSON serialization overhead of calling the MCP tool internally
    - Title: `"{template_name} — {matched_at}"`
-   - Severity: from nuclei output
-   - Content: template description + matched data
+   - Severity: from nuclei output (map nuclei severity to strix severity)
+   - Content: template description + matched data + nuclei template ID
    - Affected endpoint: `matched-at` URL
-   - Deduplication happens automatically via existing title normalization
+   - Deduplication happens automatically via existing title normalization in the tracer
 7. Return summary:
    ```json
    {
@@ -300,6 +312,7 @@ async def nuclei_scan(
      "total_findings": 12,
      "auto_filed": 9,
      "skipped_duplicates": 3,
+     "timed_out": false,
      "severity_breakdown": {"critical": 1, "high": 3, "medium": 5},
      "findings": [
        {"template_id": "git-config", "severity": "medium", "url": "..."}
@@ -307,11 +320,24 @@ async def nuclei_scan(
    }
    ```
 
+**Tool parameter addition:**
+```python
+async def nuclei_scan(
+    target: str,
+    templates: list[str] | None = None,
+    severity: str = "critical,high,medium",
+    rate_limit: int = 100,
+    timeout: int = 600,       # seconds, default 10 minutes
+    agent_id: str | None = None,
+) -> str:
+```
+
 **Error handling:**
 - No active scan → return error
 - Nuclei not found in sandbox → return error with install instructions
-- Timeout → return partial results from what was written to file
+- Timeout → read partial results from file, return with `timed_out: true`
 - Empty results → return `{total_findings: 0}` (not an error)
+- JSONL parse error on a line → skip that line, include in `errors` list
 
 ### Tool 2: `download_sourcemaps`
 
@@ -333,21 +359,21 @@ async def download_sourcemaps(
     """
 ```
 
+**Implementation approach:** The MCP tool builds a self-contained Python script and executes it as a single `python_action` call inside the sandbox. The Python session has `send_request` pre-imported, so the script can make HTTP requests directly without going through MCP proxy calls. This avoids the proxy-call explosion problem (30-60+ round trips for a typical app).
+
 **Implementation steps:**
 1. Validate active scan exists
-2. Fetch target HTML via `sandbox.proxy_tool("send_request", {"method": "GET", "url": target_url})`
-3. Extract `<script src="...">` URLs from response body (regex: `<script[^>]+src=["']([^"']+)["']`)
-4. Resolve relative URLs to absolute
-5. For each JS URL:
-   a. Fetch the JS file via `send_request`
-   b. Check last 500 chars for `//# sourceMappingURL=` or `//@ sourceMappingURL=`
-   c. Check response headers for `SourceMap` header
-   d. If no sourceMappingURL found, try `{url}.map` as fallback
-6. For each discovered `.map` URL:
-   a. Fetch the source map JSON
-   b. Parse `sources` and `sourcesContent` arrays
-   c. Save each source file to `/workspace/sourcemaps/{domain}/{source_path}` via `str_replace_editor`
-7. Return summary:
+2. Build a Python script that:
+   a. Fetches target HTML via the pre-imported `send_request`
+   b. Extracts `<script src="...">` URLs (regex: `<script[^>]+src=["']([^"']+)["']`)
+   c. Resolves relative URLs to absolute
+   d. For each JS URL: fetches the file, checks last 500 chars for `//# sourceMappingURL=` or `//@ sourceMappingURL=`, checks `SourceMap` response header, tries `{url}.map` as fallback
+   e. For each discovered `.map` URL: fetches the source map JSON, parses `sources` and `sourcesContent` arrays
+   f. Scans recovered source for notable patterns: `API_KEY`, `SECRET`, `TOKEN`, `PASSWORD`, `PRIVATE_KEY`, `aws_access_key`, `firebase`
+   g. Outputs a structured JSON result to stdout
+3. Execute via `sandbox.proxy_tool("python_action", {"action": "execute", "code": script, "timeout": 120})`
+4. Save recovered source files to `/workspace/sourcemaps/{domain}/` via `str_replace_editor` (batch call after script completes)
+5. Return summary:
    ```json
    {
      "target_url": "https://target.com",
@@ -361,13 +387,11 @@ async def download_sourcemaps(
        "src/config/index.ts"
      ],
      "notable": [
-       "src/config/index.ts contains API_KEY reference",
-       "src/api/auth.ts contains JWT secret handling"
+       "src/config/index.ts:12 — matches pattern API_KEY",
+       "src/api/auth.ts:45 — matches pattern JWT secret"
      ]
    }
    ```
-
-**Implementation note:** Steps 3-6 involve multiple sequential HTTP requests. To avoid excessive proxy_tool calls, implement the core logic as a Python script executed via `sandbox.proxy_tool("python_action", {"action": "execute", "code": script})`. The Python session has `send_request` pre-imported, making this natural. The MCP tool builds the script, executes it, and parses the structured output.
 
 **Error handling:**
 - No active scan → return error
@@ -430,6 +454,19 @@ RECON_TEMPLATES = [
 ]
 ```
 
+### `generate_plan()` Integration
+
+**Key detail:** Recon templates must NOT go through the existing `MODULE_RULES` filtering logic. The existing `generate_plan()` matches triggers against `active_triggers` (built from detected stack) and then filters agent modules through `MODULE_RULES`. Recon module names (`directory_bruteforce`, `nuclei_scanning`, etc.) are not in `MODULE_RULES` and would be filtered out.
+
+**Implementation:**
+1. Process `RECON_TEMPLATES` in a separate loop before the existing `_AGENT_TEMPLATES` loop
+2. For recon templates, match triggers against `active_triggers` (same mechanism) but include modules as-is without `MODULE_RULES` filtering
+3. Add `"phase": 0` to each recon agent dict, `"phase": 1` to each existing vulnerability agent dict
+
+**Trigger clarification:** The `"domain"` trigger fires when the target was provided with `type: "domain"`. For `type: "web_application"` targets that happen to be domain names, subdomain enumeration does NOT auto-trigger — the user chose to scope testing to a specific web app, not the entire domain. If they want subdomain enumeration, they should provide targets with `type: "domain"`.
+
+The `"web_app"` trigger fires for both `web_application` targets and `local_code` targets (after the app is started, it's a running web service). This ensures local code targets get full recon treatment at runtime.
+
 ### Plan Output Format Change
 
 The `generate_plan()` return value currently has:
@@ -447,49 +484,29 @@ Add `phase` field to each agent:
 
 Existing vulnerability templates default to `"phase": 1`. The coordinator processes agents phase by phase.
 
-### Chaining Template Update
+### Recon Context Injection
 
-Update `build_agent_prompt()` in `chaining.py` to include recon context when available. Add an optional `recon_context` parameter:
+No new parameters needed on `dispatch_agent` or `build_agent_prompt`. The coordinator includes recon context directly in the `task` string when dispatching Phase 1 agents. The `task` parameter is already free-form text — this is simpler than adding a dedicated parameter (which would be just string concatenation with extra plumbing).
 
-```python
-def build_agent_prompt(task, modules, agent_id, is_web_only=False,
-                       chain_context=None, recon_context=None):
-```
+The coordinator reads recon notes via `list_notes(category="recon")` and appends them to each Phase 1 agent's task description:
 
-If `recon_context` is provided (string of recon notes), append it after the task description:
-
-```
-RECON CONTEXT (from Phase 0):
-{recon_context}
-
-Use these discovered endpoints and services to focus your testing.
-```
-
-This allows the coordinator to pass recon results to Phase 1 agents via `dispatch_agent`.
-
-### `dispatch_agent` Tool Update
-
-Add optional `recon_context` parameter:
-
-```python
-async def dispatch_agent(
-    task: str,
-    modules: list[str],
-    is_web_only: bool = False,
-    chain_context: dict[str, str] | None = None,
-    recon_context: str | None = None,  # NEW
-) -> str:
-```
-
-The coordinator calls:
 ```python
 dispatch_agent(
-    task="Test IDOR on user endpoints",
+    task=(
+        "Test IDOR on user endpoints.\n\n"
+        "RECON CONTEXT (from Phase 0):\n"
+        "Discovered endpoints:\n"
+        "- GET /api/v1/users/{id}\n"
+        "- POST /api/v1/files\n"
+        "- GET /graphql (introspection enabled)\n\n"
+        "Use these discovered endpoints to focus your testing."
+    ),
     modules=["idor"],
     is_web_only=True,
-    recon_context="Discovered endpoints:\n- GET /api/v1/users/{id}\n- POST /api/v1/files\n..."
 )
 ```
+
+This approach avoids modifying `dispatch_agent`, `build_agent_prompt`, and the chaining template signatures. The methodology instructs the coordinator to do this injection.
 
 ---
 
@@ -505,19 +522,30 @@ dispatch_agent(
 | `strix/skills/reconnaissance/mobile_apk_analysis.md` | New | Upstream-compatible |
 | `strix-mcp/src/strix_mcp/methodology.md` | Modified | Fork-only |
 | `strix-mcp/src/strix_mcp/stack_detector.py` | Modified | Fork-only |
-| `strix-mcp/src/strix_mcp/chaining.py` | Modified | Fork-only |
-| `strix-mcp/src/strix_mcp/tools.py` | Modified | Fork-only |
+| `strix-mcp/src/strix_mcp/tools.py` | Modified | Fork-only (add `"recon"` to valid note categories, add `nuclei_scan` + `download_sourcemaps` tools) |
 
 ---
 
 ## Testing Strategy
 
 ### Unit Tests
-- `test_nuclei_scan`: mock `proxy_tool` calls, verify JSONL parsing and report filing
-- `test_download_sourcemaps`: mock HTML/JS/map responses, verify file extraction
+
+**Happy path:**
+- `test_nuclei_scan`: mock `proxy_tool` calls, verify JSONL parsing and tracer report filing
+- `test_download_sourcemaps`: mock `python_action` response, verify file extraction and notable detection
 - `test_generate_plan_recon`: verify recon templates appear with `phase: 0` for web/domain targets
-- `test_build_agent_prompt_recon_context`: verify recon context injected into prompt
-- `test_dispatch_agent_recon_context`: verify parameter passes through
+- `test_generate_plan_recon_local_code`: verify local code targets get surface discovery + infrastructure recon
+- `test_create_note_recon_category`: verify `"recon"` is accepted as a valid note category
+
+**Error/edge cases:**
+- `test_nuclei_scan_no_active_scan`: verify error return when no scan is running
+- `test_nuclei_scan_empty_results`: verify `{total_findings: 0}` return (not an error)
+- `test_nuclei_scan_timeout`: verify partial results returned with `timed_out: true`
+- `test_nuclei_scan_malformed_jsonl`: verify bad lines are skipped with errors list
+- `test_download_sourcemaps_no_scripts`: verify `{bundles_checked: 0, maps_found: 0}`
+- `test_download_sourcemaps_no_maps`: verify graceful return when JS files have no source maps
+- `test_download_sourcemaps_no_active_scan`: verify error return
+- `test_generate_plan_recon_no_domain_trigger`: verify subdomain enum does NOT fire for `web_application` targets
 
 ### Integration Tests (require Docker)
 - Start scan with web target → verify recon agents appear in plan
