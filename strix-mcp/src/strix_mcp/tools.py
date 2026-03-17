@@ -342,7 +342,7 @@ def register_tools(mcp: FastMCP, sandbox: SandboxManager) -> None:
                 set_global_tracer(tracer)
                 tracer.set_scan_config({"targets": targets})
             except Exception:
-                logger.warning("Failed to initialize tracer, continuing without telemetry")
+                logger.error("Failed to initialize tracer — vulnerability reports will NOT be persisted", exc_info=True)
 
         fired_chains.clear()
         notes_storage.clear()
@@ -550,6 +550,7 @@ def register_tools(mcp: FastMCP, sandbox: SandboxManager) -> None:
             )
         else:
             report_id = f"vuln-{uuid.uuid4().hex[:8]}"
+            logger.warning("No tracer active — report '%s' (%s) will NOT be persisted or appear in list_vulnerability_reports", title, report_id)
 
         # Detect chains after new finding
         from .chaining import detect_chains
