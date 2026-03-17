@@ -336,24 +336,34 @@ def register_tools(mcp: FastMCP, sandbox: SandboxManager) -> None:
             }
 
         # Initialize tracer (upstream pattern: entrypoint creates + sets global)
+        tracer_status = "disabled"
         if Tracer is not None:
             try:
                 tracer = Tracer(run_name=sid)
                 set_global_tracer(tracer)
                 tracer.set_scan_config({"targets": targets})
+                tracer_status = "active"
             except Exception:
                 logger.error("Failed to initialize tracer — vulnerability reports will NOT be persisted", exc_info=True)
+                tracer_status = "failed"
+        else:
+            tracer_status = "unavailable (strix.telemetry not installed)"
 
         fired_chains.clear()
         notes_storage.clear()
 
-        return json.dumps({
+        result = {
             "scan_id": state.scan_id,
             "status": "running",
             "workspace": "/workspace",
             **analysis,
+            "tracer": tracer_status,
             "message": "Sandbox ready. Target code copied to /workspace.",
-        })
+        }
+        if tracer_status != "active":
+            result["warning"] = f"Tracer is {tracer_status} — create_vulnerability_report, list_vulnerability_reports, and nuclei_scan will not persist findings."
+
+        return json.dumps(result)
 
     @mcp.tool()
     async def end_scan() -> str:
