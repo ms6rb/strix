@@ -71,7 +71,41 @@ Call the `get_module` tool for each of these modules and read the full content c
 
 ---
 
-### Step 2: Dispatch Subagents (Phase 1 — Broad Sweep)
+### Step 2: Reconnaissance (Phase 0)
+
+Before vulnerability testing, run reconnaissance to map the full attack surface.
+
+**Coordinator actions:**
+1. Review the scan plan for `phase: 0` agents — these are recon agents
+2. Dispatch ALL recon agents in parallel using `dispatch_agent`
+3. Wait for all recon agents to complete
+4. Read recon results: `list_notes(category="recon")`
+5. Adjust the Phase 1 plan based on discoveries:
+   - New endpoints found → include in Phase 1 agent task descriptions
+   - GraphQL discovered → dispatch GraphQL agent even if not in original plan
+   - Source maps recovered → dispatch code review agent for recovered source at /workspace/sourcemaps/
+   - Open non-standard ports → dispatch agents to probe those services
+6. Proceed to Phase 1 (Step 3)
+
+**Recon agents should:**
+- Use `nuclei_scan` for automated vulnerability scanning (auto-files reports)
+- Use `download_sourcemaps` for JS source map recovery
+- Use `terminal_execute` for ffuf, nmap, subfinder, httpx
+- Write ALL results as structured notes: `create_note(category="recon", title="...")`
+- Stay within scope: check `scope_rules` before scanning new targets
+
+**Passing recon context to Phase 1 agents:**
+When dispatching Phase 1 agents, append recon results to the `task` string so agents know what was discovered:
+
+```
+dispatch_agent(
+    task="Test IDOR on user endpoints.\n\nRECON CONTEXT (from Phase 0):\nDiscovered endpoints:\n- GET /api/v1/users/{id}\n- POST /api/v1/files\n\nUse these to focus your testing.",
+    modules=["idor"],
+    is_web_only=True,
+)
+```
+
+### Step 3: Dispatch Subagents (Phase 1 — Broad Sweep)
 
 **Dispatching agents:**
 For each agent in the plan, call `dispatch_agent(task=..., modules=[...])`. It handles agent registration and returns a complete prompt — pass the `prompt` field directly to the Agent tool.
@@ -87,7 +121,7 @@ Dispatch multiple subagents in parallel — they share /workspace and proxy hist
 - Subagents CAN see files created by other agents and proxy traffic from previous work
 - This enables collaboration: one agent's recon output can be used by another
 
-### Step 3: Process Results (Phase 2 — Targeted Follow-ups)
+### Step 4: Process Results (Phase 2 — Targeted Follow-ups)
 
 As subagents return findings, look for **chaining opportunities** — combinations that escalate severity.
 
@@ -127,7 +161,7 @@ Include in the agent prompt: "Phase 1 agents found: [finding A summary] and [fin
 - If any agent found input reflection → dispatch a comprehensive XSS agent with all reflected parameters
 - Use `get_scan_status` to monitor progress and `list_vulnerability_reports` to review all findings before dispatching
 
-### Step 4: End the Scan
+### Step 5: End the Scan
 
 After all subagents complete and all findings are reported:
 - Call `end_scan` to tear down the sandbox and get a summary
