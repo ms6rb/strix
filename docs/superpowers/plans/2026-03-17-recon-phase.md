@@ -457,7 +457,7 @@ Expected: All 5 tests PASS
 
 - [ ] **Step 5: Implement the `nuclei_scan` MCP tool**
 
-In `strix-mcp/src/strix_mcp/tools.py`, inside `register_tools()`, add after the `get_finding` tool (after line ~530, before the notes section):
+In `strix-mcp/src/strix_mcp/tools.py`, inside `register_tools()`, add after the `suggest_chains` tool (after line ~630) and before the `# --- Proxied Tools ---` comment (line 632). This groups recon tools with the other non-proxied scan coordination tools:
 
 ```python
     # --- Recon Tools ---
