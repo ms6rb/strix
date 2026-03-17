@@ -725,3 +725,61 @@ class TestNucleiScan:
             output_file="/tmp/results.jsonl",
         )
         assert "-t " not in cmd
+
+
+class TestSourcemapHelpers:
+    def test_extract_script_urls(self):
+        """extract_script_urls should find all script src attributes."""
+        from strix_mcp.tools import extract_script_urls
+
+        html = '''<html>
+        <script src="/assets/main.js"></script>
+        <script src="https://cdn.example.com/lib.js"></script>
+        <script>inline code</script>
+        <script src='/assets/vendor.js'></script>
+        </html>'''
+        urls = extract_script_urls(html, "https://example.com")
+        assert "https://example.com/assets/main.js" in urls
+        assert "https://cdn.example.com/lib.js" in urls
+        assert "https://example.com/assets/vendor.js" in urls
+        assert len(urls) == 3
+
+    def test_extract_script_urls_empty(self):
+        """No script tags should return empty list."""
+        from strix_mcp.tools import extract_script_urls
+
+        assert extract_script_urls("<html><body>hi</body></html>", "https://x.com") == []
+
+    def test_extract_sourcemap_url(self):
+        """extract_sourcemap_url should find sourceMappingURL comment."""
+        from strix_mcp.tools import extract_sourcemap_url
+
+        js = "var x=1;\n//# sourceMappingURL=main.js.map"
+        assert extract_sourcemap_url(js) == "main.js.map"
+
+    def test_extract_sourcemap_url_at_syntax(self):
+        """Should also find //@ sourceMappingURL syntax."""
+        from strix_mcp.tools import extract_sourcemap_url
+
+        js = "var x=1;\n//@ sourceMappingURL=old.js.map"
+        assert extract_sourcemap_url(js) == "old.js.map"
+
+    def test_extract_sourcemap_url_not_found(self):
+        """No sourceMappingURL should return None."""
+        from strix_mcp.tools import extract_sourcemap_url
+
+        assert extract_sourcemap_url("var x=1;") is None
+
+    def test_scan_for_notable_patterns(self):
+        """scan_for_notable should find API_KEY and SECRET patterns."""
+        from strix_mcp.tools import scan_for_notable
+
+        sources = {
+            "src/config.ts": "const API_KEY = 'abc123';\nconst name = 'test';",
+            "src/auth.ts": "const SECRET = 'mysecret';",
+            "src/utils.ts": "function add(a, b) { return a + b; }",
+        }
+        notable = scan_for_notable(sources)
+        assert any("config.ts" in n and "API_KEY" in n for n in notable)
+        assert any("auth.ts" in n and "SECRET" in n for n in notable)
+        assert not any("utils.ts" in n for n in notable)

@@ -2,10 +2,12 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 import uuid
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, Sequence
+from urllib.parse import urljoin
 
 from fastmcp import FastMCP
 from mcp import types
@@ -193,6 +195,45 @@ def build_nuclei_command(
         for t in templates:
             parts.append(f"-t {t}")
     return " ".join(parts)
+
+
+# --- Source map discovery helpers ---
+
+
+def extract_script_urls(html: str, base_url: str) -> list[str]:
+    """Extract absolute URLs of <script src="..."> tags from HTML."""
+    pattern = r'<script[^>]+src=["\']([^"\']+)["\']'
+    matches = re.findall(pattern, html, re.IGNORECASE)
+    return [urljoin(base_url, m) for m in matches]
+
+
+def extract_sourcemap_url(js_content: str) -> str | None:
+    """Extract sourceMappingURL from the end of a JS file."""
+    # Check last 500 chars to avoid scanning huge files
+    tail = js_content[-500:] if len(js_content) > 500 else js_content
+    match = re.search(r'//[#@]\s*sourceMappingURL=(\S+)', tail)
+    return match.group(1) if match else None
+
+
+_NOTABLE_PATTERNS = [
+    "API_KEY", "SECRET", "TOKEN", "PASSWORD", "PRIVATE_KEY",
+    "aws_access_key", "firebase", "supabase_key",
+]
+
+
+def scan_for_notable(sources: dict[str, str]) -> list[str]:
+    """Scan recovered source files for notable patterns (secrets, keys).
+
+    Returns list of strings like "src/config.ts:12 — matches pattern API_KEY".
+    """
+    results: list[str] = []
+    for filepath, content in sources.items():
+        for i, line in enumerate(content.splitlines(), 1):
+            for pattern in _NOTABLE_PATTERNS:
+                if pattern.lower() in line.lower():
+                    results.append(f"{filepath}:{i} — matches pattern {pattern}")
+                    break  # one match per line
+    return results
 
 
 def _deduplicate_reports(
@@ -809,6 +850,168 @@ def register_tools(mcp: FastMCP, sandbox: SandboxManager) -> None:
                 {"template_id": f["template_id"], "severity": f["severity"], "url": f["url"]}
                 for f in findings
             ],
+        })
+
+    @mcp.tool()
+    async def download_sourcemaps(
+        target_url: str,
+        agent_id: str | None = None,
+    ) -> str:
+        """Discover and download JavaScript source maps from a web target.
+
+        Fetches the target URL, extracts script tags, checks each JS file
+        for source maps, downloads and extracts original source code into
+        /workspace/sourcemaps/{domain}/.
+
+        target_url: base URL to scan for JS bundles
+        agent_id: subagent identifier from dispatch_agent (omit for coordinator)"""
+        scan = sandbox.active_scan
+        if scan is None:
+            return json.dumps({"error": "No active scan. Call start_scan first."})
+
+        from urllib.parse import urlparse
+        domain = urlparse(target_url).netloc
+
+        # Build Python script that runs inside sandbox.
+        # Regex patterns injected via repr() to avoid escaping issues in nested strings.
+        script_regex = r'<script[^>]+src=["' + "'" + r'](.[^"' + "'" + r']+)["' + "'" + r']'
+        sm_regex = r'//[#@]\s*sourceMappingURL=(\S+)'
+        script = (
+            'import json, re, sys\n'
+            'from urllib.parse import urljoin\n'
+            '\n'
+            'SCRIPT_REGEX = SCRIPT_REGEX_PLACEHOLDER\n'
+            'SM_REGEX = SM_REGEX_PLACEHOLDER\n'
+            '\n'
+            'results = {"bundles_checked": 0, "maps_found": 0, "files": {}, "errors": []}\n'
+            '\n'
+            'try:\n'
+            '    resp = send_request("GET", TARGET_URL, timeout=30)\n'
+            '    html = resp.get("response", {}).get("body", "") if isinstance(resp, dict) else ""\n'
+            'except Exception as e:\n'
+            '    results["errors"].append(f"Failed to fetch HTML: {e}")\n'
+            '    print(json.dumps(results))\n'
+            '    sys.exit(0)\n'
+            '\n'
+            'matches = re.findall(SCRIPT_REGEX, html, re.IGNORECASE)\n'
+            'script_urls = [urljoin(TARGET_URL, m) for m in matches]\n'
+            '\n'
+            'for js_url in script_urls:\n'
+            '    results["bundles_checked"] += 1\n'
+            '    try:\n'
+            '        js_resp = send_request("GET", js_url, timeout=15)\n'
+            '        js_body = js_resp.get("response", {}).get("body", "") if isinstance(js_resp, dict) else ""\n'
+            '        js_headers = js_resp.get("response", {}).get("headers", {}) if isinstance(js_resp, dict) else {}\n'
+            '    except Exception as e:\n'
+            '        results["errors"].append(f"Failed to fetch {js_url}: {e}")\n'
+            '        continue\n'
+            '\n'
+            '    map_url = None\n'
+            '    tail = js_body[-500:] if len(js_body) > 500 else js_body\n'
+            '    sm_match = re.search(SM_REGEX, tail)\n'
+            '    if sm_match:\n'
+            '        map_url = urljoin(js_url, sm_match.group(1))\n'
+            '    elif "SourceMap" in js_headers or "sourcemap" in js_headers or "X-SourceMap" in js_headers:\n'
+            '        header_val = js_headers.get("SourceMap") or js_headers.get("sourcemap") or js_headers.get("X-SourceMap")\n'
+            '        if header_val:\n'
+            '            map_url = urljoin(js_url, header_val)\n'
+            '    else:\n'
+            '        fallback_url = js_url + ".map"\n'
+            '        try:\n'
+            '            fb_resp = send_request("GET", fallback_url, timeout=10)\n'
+            '            fb_status = fb_resp.get("response", {}).get("status_code", 0) if isinstance(fb_resp, dict) else 0\n'
+            '            if fb_status == 200:\n'
+            '                map_url = fallback_url\n'
+            '        except Exception:\n'
+            '            pass\n'
+            '\n'
+            '    if not map_url:\n'
+            '        continue\n'
+            '\n'
+            '    try:\n'
+            '        map_resp = send_request("GET", map_url, timeout=30)\n'
+            '        map_body = map_resp.get("response", {}).get("body", "") if isinstance(map_resp, dict) else ""\n'
+            '        map_data = json.loads(map_body)\n'
+            '    except Exception as e:\n'
+            '        results["errors"].append(f"Failed to parse source map {map_url}: {e}")\n'
+            '        continue\n'
+            '\n'
+            '    results["maps_found"] += 1\n'
+            '    sources = map_data.get("sources", [])\n'
+            '    contents = map_data.get("sourcesContent", [])\n'
+            '    for i, src_path in enumerate(sources):\n'
+            '        if i < len(contents) and contents[i]:\n'
+            '            results["files"][src_path] = contents[i]\n'
+            '\n'
+            'print(json.dumps(results))\n'
+        )
+        script = script.replace("TARGET_URL", repr(target_url))
+        script = script.replace("SCRIPT_REGEX_PLACEHOLDER", repr(script_regex))
+        script = script.replace("SM_REGEX_PLACEHOLDER", repr(sm_regex))
+
+        # Create session and execute
+        session_result = await sandbox.proxy_tool("python_action", {
+            "action": "new_session",
+            **({"agent_id": agent_id} if agent_id else {}),
+        })
+        session_id = ""
+        if isinstance(session_result, dict):
+            session_id = session_result.get("session_id", "")
+
+        exec_result = await sandbox.proxy_tool("python_action", {
+            "action": "execute",
+            "code": script,
+            "timeout": 120,
+            "session_id": session_id,
+            **({"agent_id": agent_id} if agent_id else {}),
+        })
+
+        # Parse output
+        output = ""
+        if isinstance(exec_result, dict):
+            output = exec_result.get("output", "")
+
+        try:
+            data = json.loads(output.strip().splitlines()[-1] if output.strip() else "{}")
+        except (json.JSONDecodeError, IndexError):
+            return json.dumps({"error": "Failed to parse source map discovery output", "raw": output[:500]})
+
+        recovered_files = data.get("files", {})
+        save_path = f"/workspace/sourcemaps/{domain}/"
+
+        # Save files to sandbox
+        for filepath, content in recovered_files.items():
+            full_path = f"{save_path}{filepath}"
+            try:
+                await sandbox.proxy_tool("str_replace_editor", {
+                    "command": "create",
+                    "file_path": full_path,
+                    "file_text": content,
+                    **({"agent_id": agent_id} if agent_id else {}),
+                })
+            except Exception:
+                pass  # best-effort save
+
+        # Scan for notable patterns
+        notable = scan_for_notable(recovered_files)
+
+        # Close session
+        if session_id:
+            await sandbox.proxy_tool("python_action", {
+                "action": "close",
+                "session_id": session_id,
+                **({"agent_id": agent_id} if agent_id else {}),
+            })
+
+        return json.dumps({
+            "target_url": target_url,
+            "bundles_checked": data.get("bundles_checked", 0),
+            "maps_found": data.get("maps_found", 0),
+            "files_recovered": len(recovered_files),
+            "save_path": save_path if recovered_files else None,
+            "file_list": list(recovered_files.keys())[:50],
+            "notable": notable[:20],
+            **({"errors": data["errors"]} if data.get("errors") else {}),
         })
 
     # --- Proxied Tools ---
