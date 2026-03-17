@@ -20,9 +20,23 @@
 - Modify: `strix-mcp/src/strix_mcp/tools.py:1021`
 - Test: `strix-mcp/tests/test_tools.py`
 
-- [ ] **Step 1: Write the failing test**
+- [ ] **Step 1: Move `_VALID_NOTE_CATEGORIES` to module scope (without adding "recon" yet)**
 
-**Important:** `_VALID_NOTE_CATEGORIES` is currently defined at line 1021 *inside* `register_tools()` as a local variable. It cannot be imported. First, we must move it to module scope, then write the test.
+**Important:** `_VALID_NOTE_CATEGORIES` is currently defined at line 1021 *inside* `register_tools()` as a local variable. It cannot be imported by tests. Move it to module scope first.
+
+In `strix-mcp/src/strix_mcp/tools.py`:
+
+1. Add at module scope (after `_SEVERITY_ORDER` at line 136, before `_normalize_severity`):
+
+```python
+VALID_NOTE_CATEGORIES = ["general", "findings", "methodology", "questions", "plan"]
+```
+
+2. Delete the local `_VALID_NOTE_CATEGORIES` at line 1021 (inside `register_tools()`)
+
+3. Update all references from `_VALID_NOTE_CATEGORIES` to `VALID_NOTE_CATEGORIES` inside `register_tools()` (the `create_note` function at ~line 1043)
+
+- [ ] **Step 2: Write the failing test**
 
 In `strix-mcp/tests/test_tools.py`, add at the end of the file:
 
@@ -34,42 +48,36 @@ class TestReconNoteCategory:
         assert "recon" in VALID_NOTE_CATEGORIES
 ```
 
-- [ ] **Step 2: Run test to verify it fails**
+- [ ] **Step 3: Run test to verify it fails**
 
 Run: `cd strix-mcp && python -m pytest tests/test_tools.py::TestReconNoteCategory -v --tb=short -o "addopts="`
-Expected: FAIL with `ImportError: cannot import name 'VALID_NOTE_CATEGORIES'`
+Expected: FAIL with `assert 'recon' in ['general', 'findings', 'methodology', 'questions', 'plan']`
 
-- [ ] **Step 3: Move categories to module scope and add "recon"**
+- [ ] **Step 4: Add "recon" to the list**
 
-In `strix-mcp/src/strix_mcp/tools.py`:
-
-1. Add at module scope (after `_SEVERITY_ORDER` at line 136, before `_normalize_severity`):
+In `strix-mcp/src/strix_mcp/tools.py`, change the module-scope constant:
 
 ```python
 VALID_NOTE_CATEGORIES = ["general", "findings", "methodology", "questions", "plan", "recon"]
 ```
 
-2. Delete the local `_VALID_NOTE_CATEGORIES` at line 1021 (inside `register_tools()`)
-
-3. Update all references from `_VALID_NOTE_CATEGORIES` to `VALID_NOTE_CATEGORIES` inside `register_tools()` (the `create_note` function at ~line 1043)
-
-4. Update the docstring for `create_note` to include `recon`:
+Also update the docstring for `create_note` to include `recon`:
 
 ```python
         category: general | findings | methodology | questions | plan | recon
 ```
 
-- [ ] **Step 4: Run test to verify it passes**
+- [ ] **Step 5: Run test to verify it passes**
 
 Run: `cd strix-mcp && python -m pytest tests/test_tools.py::TestReconNoteCategory -v --tb=short -o "addopts="`
 Expected: PASS
 
-- [ ] **Step 5: Run full test suite**
+- [ ] **Step 6: Run full test suite**
 
 Run: `cd strix-mcp && python -m pytest tests/ -v --tb=short -o "addopts=" --ignore=tests/test_integration.py`
 Expected: All tests pass
 
-- [ ] **Step 6: Commit**
+- [ ] **Step 7: Commit**
 
 ```bash
 git add strix-mcp/src/strix_mcp/tools.py strix-mcp/tests/test_tools.py
@@ -273,7 +281,7 @@ In `strix-mcp/tests/test_stack_detector.py`, change the `test_generic_triggers_a
 Run: `cd strix-mcp && python -m pytest tests/ -v --tb=short -o "addopts=" --ignore=tests/test_integration.py`
 Expected: All tests pass.
 
-- [ ] **Step 6: Commit**
+- [ ] **Step 7: Commit**
 
 ```bash
 git add strix-mcp/src/strix_mcp/stack_detector.py strix-mcp/tests/test_stack_detector.py
@@ -287,6 +295,8 @@ git commit -m "feat(mcp): add recon templates and phase field to generate_plan"
 **Files:**
 - Modify: `strix-mcp/src/strix_mcp/tools.py`
 - Test: `strix-mcp/tests/test_tools.py`
+
+**Testing note:** The `nuclei_scan` and `download_sourcemaps` MCP tool functions are async closures registered inside `register_tools()` that depend on a live `SandboxManager` with Docker. They cannot be unit-tested without mocking the entire sandbox proxy layer. We test the **helper functions** (`parse_nuclei_jsonl`, `build_nuclei_command`, etc.) which contain all the parsing/logic, and rely on **integration tests** (Task 7 + Docker-based tests) to validate the tool end-to-end. This matches the existing pattern — no other proxied tools in `tools.py` have unit tests for the tool function itself.
 
 - [ ] **Step 1: Write failing tests**
 
@@ -599,6 +609,10 @@ git commit -m "feat(mcp): add nuclei_scan tool with auto-report filing"
 **Files:**
 - Modify: `strix-mcp/src/strix_mcp/tools.py`
 - Test: `strix-mcp/tests/test_tools.py`
+
+**Testing note:** Same as Task 3 — helpers are unit-tested, the tool function requires Docker for integration testing.
+
+**Implementation note:** The `download_sourcemaps` tool builds a Python script as a string and executes it via `python_action` in the sandbox. This avoids 30-60+ proxy round trips but makes the code harder to read. Regex patterns and the target URL are injected via `repr()` + `.replace()` to avoid escaping issues inside nested string literals. If debugging this at runtime, the easiest approach is to print the `script` variable before execution to inspect the generated code.
 
 - [ ] **Step 1: Write failing tests**
 
@@ -913,7 +927,9 @@ git commit -m "feat(mcp): add download_sourcemaps tool with auto-extraction"
 - Create: `strix/skills/reconnaissance/nuclei_scanning.md`
 - Create: `strix/skills/reconnaissance/mobile_apk_analysis.md`
 
-These are upstream-compatible knowledge modules. Each follows the YAML frontmatter + markdown format used by existing modules (see `strix/skills/vulnerabilities/idor.md` for reference). Write each module with the content described in the spec sections under Component 2.
+These are upstream-compatible knowledge modules. Each follows the YAML frontmatter + markdown format used by existing modules (see `strix/skills/vulnerabilities/idor.md` for reference — read it first for the expected depth and style). Write each module with the content described in the spec sections under Component 2.
+
+**Note for implementers:** This task is the most creative — the spec describes *what* each module covers but not the full markdown content. Use the spec's bullet points as an outline, read `idor.md` for the tone/depth, and write actionable content with real commands. Each module should be self-contained enough that Claude can follow it without other context.
 
 Modules should:
 - Have YAML frontmatter with `name` and `description` fields
