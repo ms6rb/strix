@@ -201,6 +201,48 @@ _AGENT_TEMPLATES: list[dict[str, Any]] = [
     },
 ]
 
+# ---------------------------------------------------------------------------
+# Recon agent templates (Phase 0 — run before vulnerability agents)
+# ---------------------------------------------------------------------------
+_RECON_TEMPLATES: list[dict[str, Any]] = [
+    {
+        "id": "recon_surface_discovery",
+        "task": (
+            "Map the attack surface: run directory brute-forcing with ffuf against "
+            "the target using common and stack-specific wordlists. Check all discovered "
+            "JS bundles for source maps using download_sourcemaps. Query Wayback Machine "
+            "for historical endpoints. Write all results as structured recon notes."
+        ),
+        "modules": ["directory_bruteforce", "source_map_discovery"],
+        "triggers": ["web_app", "domain"],
+        "confidence": "high",
+    },
+    {
+        "id": "recon_infrastructure",
+        "task": (
+            "Infrastructure reconnaissance: run nmap port scan against the target "
+            "to discover non-standard ports and services. Run nuclei_scan with default "
+            "templates for quick vulnerability wins. Write all results as structured "
+            "recon notes. Nuclei findings are auto-filed as vulnerability reports."
+        ),
+        "modules": ["port_scanning", "nuclei_scanning"],
+        "triggers": ["web_app", "domain"],
+        "confidence": "high",
+    },
+    {
+        "id": "recon_subdomain_enum",
+        "task": (
+            "Enumerate subdomains using subfinder and certificate transparency logs. "
+            "Validate live hosts with httpx. Check for subdomain takeover on dangling "
+            "CNAMEs. Cross-reference with scope rules before any testing. Write all "
+            "results as structured recon notes."
+        ),
+        "modules": ["subdomain_enumeration"],
+        "triggers": ["domain"],
+        "confidence": "high",
+    },
+]
+
 
 # ---------------------------------------------------------------------------
 # detect_stack
@@ -314,6 +356,20 @@ def generate_plan(
         recommended_modules.update(MODULE_RULES.get(trigger, []))
 
     plan: list[dict[str, Any]] = []
+
+    # --- Phase 0: Recon agents (bypass MODULE_RULES filtering) ---
+    for template in _RECON_TEMPLATES:
+        if not any(t in active_triggers for t in template["triggers"]):
+            continue
+        plan.append({
+            "task": template["task"],
+            "modules": list(template["modules"]),  # include as-is, no filtering
+            "priority": "high",
+            "confidence": template["confidence"],
+            "phase": 0,
+        })
+
+    # --- Phase 1: Vulnerability agents (existing logic) ---
     for template in _AGENT_TEMPLATES:
         # Include template only if any of its triggers are active
         if not any(t in active_triggers for t in template["triggers"]):
@@ -326,7 +382,6 @@ def generate_plan(
 
         # Determine confidence
         if template.get("signal_strength") == "specific":
-            # Check if any trigger depends on probe confirmation
             probe_dependent = any(t in _PROBE_CONFIRMED_TRIGGERS for t in template["triggers"])
             if probe_dependent and probes_were_stale:
                 confidence = "low"
@@ -340,6 +395,7 @@ def generate_plan(
             "modules": filtered_modules,
             "priority": template["priority"],
             "confidence": confidence,
+            "phase": 1,
         })
 
     return plan

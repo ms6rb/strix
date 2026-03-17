@@ -256,11 +256,13 @@ class TestPlanConfidence:
             assert entry["confidence"] in ("high", "medium", "low")
 
     def test_generic_triggers_are_medium_confidence(self):
-        """Templates triggered only by 'always' or 'web_app' (generic) should be medium confidence."""
+        """Phase-1 templates triggered only by 'always' or 'web_app' (generic) should be medium confidence."""
         # Empty stack — only 'always' and 'web_app' triggers fire
         stack = detect_stack(EMPTY_SIGNALS)
         plan = generate_plan(stack)
-        for entry in plan:
+        # Only check phase-1 (vuln) agents — phase-0 recon agents have high confidence by design
+        vuln_agents = [e for e in plan if e.get("phase") == 1]
+        for entry in vuln_agents:
             assert entry["confidence"] == "medium", f"Expected medium for generic trigger: {entry}"
 
     def test_framework_trigger_is_high_confidence(self):
@@ -405,3 +407,57 @@ class TestGeneratePlanNewTemplates:
         from strix_mcp.stack_detector import MODULE_RULES
         for fw in ["django", "flask", "laravel", "wordpress", "rails", "express"]:
             assert fw in MODULE_RULES, f"Missing MODULE_RULES for {fw}"
+
+
+class TestReconPhase:
+    def test_web_app_plan_includes_recon_agents(self):
+        """Web app targets should get phase-0 recon agents."""
+        stack = detect_stack(EMPTY_SIGNALS)
+        plan = generate_plan(stack)
+        recon_agents = [e for e in plan if e.get("phase") == 0]
+        assert len(recon_agents) >= 2, f"Expected >=2 recon agents, got {len(recon_agents)}"
+        # Should have surface discovery and infrastructure
+        tasks = [a["task"].lower() for a in recon_agents]
+        assert any("directory" in t or "ffuf" in t or "surface" in t for t in tasks)
+        assert any("nmap" in t or "nuclei" in t or "infrastructure" in t for t in tasks)
+
+    def test_domain_plan_includes_subdomain_enum(self):
+        """Domain targets should get subdomain enumeration agent."""
+        stack = detect_stack(EMPTY_SIGNALS)
+        stack["target_types"] = ["domain"]
+        plan = generate_plan(stack)
+        recon_agents = [e for e in plan if e.get("phase") == 0]
+        tasks = [a["task"].lower() for a in recon_agents]
+        assert any("subdomain" in t for t in tasks), f"No subdomain agent in: {tasks}"
+
+    def test_web_app_no_subdomain_enum(self):
+        """Web app targets (no domain type) should NOT get subdomain enumeration."""
+        stack = detect_stack(EMPTY_SIGNALS)
+        # No target_types set — pure web_app
+        plan = generate_plan(stack)
+        recon_agents = [e for e in plan if e.get("phase") == 0]
+        tasks = [a["task"].lower() for a in recon_agents]
+        assert not any("subdomain" in t for t in tasks), f"Unexpected subdomain agent in: {tasks}"
+
+    def test_all_plan_entries_have_phase(self):
+        """Every plan entry must have a 'phase' field (0 or 1)."""
+        stack = detect_stack(EMPTY_SIGNALS)
+        plan = generate_plan(stack)
+        for entry in plan:
+            assert "phase" in entry, f"Entry missing 'phase': {entry}"
+            assert entry["phase"] in (0, 1), f"Invalid phase: {entry['phase']}"
+
+    def test_vuln_agents_have_phase_1(self):
+        """Existing vulnerability agents should have phase 1."""
+        stack = detect_stack(EMPTY_SIGNALS)
+        plan = generate_plan(stack)
+        vuln_agents = [e for e in plan if e.get("phase") == 1]
+        assert len(vuln_agents) >= 3, "Should have at least 3 phase-1 vuln agents"
+
+    def test_recon_modules_not_filtered_by_module_rules(self):
+        """Recon agent modules should survive even though they're not in MODULE_RULES."""
+        stack = detect_stack(EMPTY_SIGNALS)
+        plan = generate_plan(stack)
+        recon_agents = [e for e in plan if e.get("phase") == 0]
+        for agent in recon_agents:
+            assert len(agent["modules"]) > 0, f"Recon agent has no modules: {agent}"
