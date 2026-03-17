@@ -769,8 +769,9 @@ def register_tools(mcp: FastMCP, sandbox: SandboxManager) -> None:
             output_file=output_file,
         )
 
-        # Launch nuclei in background
-        bg_cmd = f"nohup {cmd} > /dev/null 2>&1 & echo $!"
+        # Launch nuclei in background — capture stderr for diagnostics
+        stderr_file = output_file.replace(".jsonl", ".stderr")
+        bg_cmd = f"nohup {cmd} 2>{stderr_file} & echo $!"
         launch_result = await sandbox.proxy_tool("terminal_execute", {
             "command": bg_cmd,
             "timeout": 10,
@@ -812,6 +813,16 @@ def register_tools(mcp: FastMCP, sandbox: SandboxManager) -> None:
         if isinstance(read_result, dict):
             jsonl_output = read_result.get("output", "")
 
+        # Read stderr for diagnostics
+        stderr_result = await sandbox.proxy_tool("terminal_execute", {
+            "command": f"tail -20 {stderr_file} 2>/dev/null || echo ''",
+            "timeout": 5,
+            **({"agent_id": agent_id} if agent_id else {}),
+        })
+        nuclei_stderr = ""
+        if isinstance(stderr_result, dict):
+            nuclei_stderr = stderr_result.get("output", "").strip()
+
         # Parse findings
         findings = parse_nuclei_jsonl(jsonl_output)
 
@@ -849,7 +860,7 @@ def register_tools(mcp: FastMCP, sandbox: SandboxManager) -> None:
             sev = _normalize_severity(f["severity"])
             severity_breakdown[sev] = severity_breakdown.get(sev, 0) + 1
 
-        return json.dumps({
+        result_data: dict[str, Any] = {
             "target": target,
             "templates_used": templates or ["all"],
             "total_findings": len(findings),
@@ -861,7 +872,10 @@ def register_tools(mcp: FastMCP, sandbox: SandboxManager) -> None:
                 {"template_id": f["template_id"], "severity": f["severity"], "url": f["url"]}
                 for f in findings
             ],
-        })
+        }
+        if nuclei_stderr:
+            result_data["nuclei_stderr"] = nuclei_stderr[:1000]
+        return json.dumps(result_data)
 
     @mcp.tool()
     async def download_sourcemaps(
@@ -898,7 +912,15 @@ def register_tools(mcp: FastMCP, sandbox: SandboxManager) -> None:
             '\n'
             'try:\n'
             '    resp = send_request("GET", TARGET_URL, timeout=30)\n'
-            '    html = resp.get("response", {}).get("body", "") if isinstance(resp, dict) else ""\n'
+            '    # Handle both response formats: sandbox may return {"response": {"body": ...}} or {"body": ...}\n'
+            '    if isinstance(resp, dict):\n'
+            '        if "response" in resp:\n'
+            '            html = resp["response"].get("body", "")\n'
+            '        else:\n'
+            '            html = resp.get("body", "")\n'
+            '    else:\n'
+            '        html = str(resp) if resp else ""\n'
+            '    results["html_length"] = len(html)\n'
             'except Exception as e:\n'
             '    results["errors"].append(f"Failed to fetch HTML: {e}")\n'
             '    print(json.dumps(results))\n'
@@ -911,8 +933,15 @@ def register_tools(mcp: FastMCP, sandbox: SandboxManager) -> None:
             '    results["bundles_checked"] += 1\n'
             '    try:\n'
             '        js_resp = send_request("GET", js_url, timeout=15)\n'
-            '        js_body = js_resp.get("response", {}).get("body", "") if isinstance(js_resp, dict) else ""\n'
-            '        js_headers = js_resp.get("response", {}).get("headers", {}) if isinstance(js_resp, dict) else {}\n'
+            '        if isinstance(js_resp, dict) and "response" in js_resp:\n'
+            '            js_body = js_resp["response"].get("body", "")\n'
+            '            js_headers = js_resp["response"].get("headers", {})\n'
+            '        elif isinstance(js_resp, dict):\n'
+            '            js_body = js_resp.get("body", "")\n'
+            '            js_headers = js_resp.get("headers", {})\n'
+            '        else:\n'
+            '            js_body = ""\n'
+            '            js_headers = {}\n'
             '    except Exception as e:\n'
             '        results["errors"].append(f"Failed to fetch {js_url}: {e}")\n'
             '        continue\n'
@@ -930,7 +959,12 @@ def register_tools(mcp: FastMCP, sandbox: SandboxManager) -> None:
             '        fallback_url = js_url + ".map"\n'
             '        try:\n'
             '            fb_resp = send_request("GET", fallback_url, timeout=10)\n'
-            '            fb_status = fb_resp.get("response", {}).get("status_code", 0) if isinstance(fb_resp, dict) else 0\n'
+            '            if isinstance(fb_resp, dict) and "response" in fb_resp:\n'
+            '                fb_status = fb_resp["response"].get("status_code", 0)\n'
+            '            elif isinstance(fb_resp, dict):\n'
+            '                fb_status = fb_resp.get("status_code", 0)\n'
+            '            else:\n'
+            '                fb_status = 0\n'
             '            if fb_status == 200:\n'
             '                map_url = fallback_url\n'
             '        except Exception:\n'
@@ -941,7 +975,12 @@ def register_tools(mcp: FastMCP, sandbox: SandboxManager) -> None:
             '\n'
             '    try:\n'
             '        map_resp = send_request("GET", map_url, timeout=30)\n'
-            '        map_body = map_resp.get("response", {}).get("body", "") if isinstance(map_resp, dict) else ""\n'
+            '        if isinstance(map_resp, dict) and "response" in map_resp:\n'
+            '            map_body = map_resp["response"].get("body", "")\n'
+            '        elif isinstance(map_resp, dict):\n'
+            '            map_body = map_resp.get("body", "")\n'
+            '        else:\n'
+            '            map_body = ""\n'
             '        map_data = json.loads(map_body)\n'
             '    except Exception as e:\n'
             '        results["errors"].append(f"Failed to parse source map {map_url}: {e}")\n'
@@ -1016,6 +1055,7 @@ def register_tools(mcp: FastMCP, sandbox: SandboxManager) -> None:
 
         return json.dumps({
             "target_url": target_url,
+            "html_length": data.get("html_length", 0),
             "bundles_checked": data.get("bundles_checked", 0),
             "maps_found": data.get("maps_found", 0),
             "files_recovered": len(recovered_files),
