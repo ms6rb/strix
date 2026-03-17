@@ -497,9 +497,9 @@ def register_tools(mcp: FastMCP, sandbox: SandboxManager) -> None:
         dup_idx = _find_duplicate(normalized, existing)
 
         if dup_idx is not None:
-            # existing[dup_idx] is a shared reference to the dict in
-            # tracer.vulnerability_reports, so mutations apply in-place.
-            report = existing[dup_idx]
+            # Merge into the tracer's internal list directly — don't rely
+            # on get_existing_vulnerabilities() returning shared references.
+            report = tracer.vulnerability_reports[dup_idx] if tracer else existing[dup_idx]
             if _SEVERITY_ORDER.index(severity) > _SEVERITY_ORDER.index(
                 _normalize_severity(report.get("severity", "info"))
             ):
