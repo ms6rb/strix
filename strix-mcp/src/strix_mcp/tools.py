@@ -1119,16 +1119,21 @@ def register_tools(mcp: FastMCP, sandbox: SandboxManager) -> None:
         sort_by: timestamp | host | method | path | status_code | response_time | response_size | source
         sort_order: asc | desc
         agent_id: subagent identifier from dispatch_agent (omit for coordinator)"""
-        result = await sandbox.proxy_tool("list_requests", {
-            "httpql_filter": httpql_filter,
+        kwargs: dict[str, Any] = {
             "start_page": start_page,
-            "end_page": end_page,
             "page_size": page_size,
             "sort_by": sort_by,
             "sort_order": sort_order,
-            "scope_id": scope_id,
-            **({"agent_id": agent_id} if agent_id else {}),
-        })
+        }
+        if httpql_filter is not None:
+            kwargs["httpql_filter"] = httpql_filter
+        if end_page is not None:
+            kwargs["end_page"] = end_page
+        if scope_id is not None:
+            kwargs["scope_id"] = scope_id
+        if agent_id:
+            kwargs["agent_id"] = agent_id
+        result = await sandbox.proxy_tool("list_requests", kwargs)
         return json.dumps(result)
 
     @mcp.tool()
