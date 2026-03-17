@@ -281,11 +281,18 @@ async def nuclei_scan(
           -jsonl -o /tmp/nuclei_results.jsonl -silent
    ```
    If `templates` provided: add `-t {template}` for each
-3. Execute via `sandbox.proxy_tool("terminal_execute", {"command": cmd, "timeout": timeout})`
-   - Default `timeout` parameter: 600 seconds (10 minutes)
-   - `terminal_execute` timeout behavior: stops waiting for output but the nuclei process continues running in the sandbox. This is important — a timeout does NOT kill nuclei.
-4. Read results file via `sandbox.proxy_tool("terminal_execute", {"command": "cat /tmp/nuclei_results.jsonl"})`
-   - If step 3 timed out, the results file contains partial results (nuclei writes incrementally)
+3. Launch nuclei in background and poll for completion:
+   ```
+   nohup nuclei ... > /tmp/nuclei_results.jsonl 2>/dev/null &
+   echo $!
+   ```
+   - Run via `proxy_tool("terminal_execute", {"command": cmd, "timeout": 10})` — this returns immediately with the PID
+   - The `terminal_execute` docstring claims a 60-second cap; the MCP-side `proxy_tool` HTTP call has a 300-second timeout (`sandbox.py` line 236). Neither is sufficient for long nuclei scans.
+   - Background execution avoids both limits. The nuclei process runs independently in the sandbox.
+4. Poll for completion:
+   - Check if process is still running: `kill -0 {pid} 2>/dev/null && echo running || echo done`
+   - Poll every 15 seconds up to the `timeout` parameter (default 600s / 10 minutes)
+   - On completion or timeout: read results file via `proxy_tool("terminal_execute", {"command": "cat /tmp/nuclei_results.jsonl"})`
    - If the file doesn't exist yet, return `{total_findings: 0, timed_out: true}`
 5. Parse each JSONL line:
    ```json
@@ -408,7 +415,9 @@ async def download_sourcemaps(
 
 ### New Recon Agent Templates
 
-Add to `generate_plan()` so recon agents appear in the scan plan with `phase: 0`:
+Add to `generate_plan()` so recon agents appear in the scan plan with `phase: 0`.
+
+**Note:** The `id` field is new — existing `_AGENT_TEMPLATES` don't have it. The `id` is used for logging/debugging only (e.g., tracer logs). It is not functionally required. Adding IDs to existing templates is out of scope for this change.
 
 ```python
 RECON_TEMPLATES = [
@@ -421,7 +430,7 @@ RECON_TEMPLATES = [
             "for historical endpoints. Write all results as structured recon notes."
         ),
         "modules": ["directory_bruteforce", "source_map_discovery"],
-        "triggers": ["web_app"],
+        "triggers": ["web_app", "domain"],
         "confidence": "high",
         "phase": 0,
     },
