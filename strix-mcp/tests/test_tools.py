@@ -643,3 +643,85 @@ class TestReconNoteCategory:
         """The 'recon' category should be accepted by the notes system."""
         from strix_mcp.tools import VALID_NOTE_CATEGORIES
         assert "recon" in VALID_NOTE_CATEGORIES
+
+
+class TestNucleiScan:
+    """Tests for the nuclei_scan MCP tool logic."""
+
+    def _make_jsonl(self, findings: list[dict]) -> str:
+        """Build JSONL string from a list of finding dicts."""
+        return "\n".join(json.dumps(f) for f in findings)
+
+    def test_parse_nuclei_jsonl(self):
+        """parse_nuclei_jsonl should extract template-id, matched-at, severity, and info."""
+        from strix_mcp.tools import parse_nuclei_jsonl
+
+        jsonl = self._make_jsonl([
+            {
+                "template-id": "git-config",
+                "matched-at": "https://target.com/.git/config",
+                "severity": "medium",
+                "info": {"name": "Git Config File", "description": "Exposed git config"},
+            },
+            {
+                "template-id": "exposed-env",
+                "matched-at": "https://target.com/.env",
+                "severity": "high",
+                "info": {"name": "Exposed .env", "description": "Environment file exposed"},
+            },
+        ])
+        findings = parse_nuclei_jsonl(jsonl)
+        assert len(findings) == 2
+        assert findings[0]["template_id"] == "git-config"
+        assert findings[0]["url"] == "https://target.com/.git/config"
+        assert findings[0]["severity"] == "medium"
+        assert findings[0]["name"] == "Git Config File"
+
+    def test_parse_nuclei_jsonl_skips_bad_lines(self):
+        """Malformed JSONL lines should be skipped, not crash."""
+        from strix_mcp.tools import parse_nuclei_jsonl
+
+        jsonl = 'not valid json\n{"template-id": "ok", "matched-at": "https://x.com", "severity": "low", "info": {"name": "OK", "description": "ok"}}\n{broken'
+        findings = parse_nuclei_jsonl(jsonl)
+        assert len(findings) == 1
+        assert findings[0]["template_id"] == "ok"
+
+    def test_parse_nuclei_jsonl_empty(self):
+        """Empty JSONL should return empty list."""
+        from strix_mcp.tools import parse_nuclei_jsonl
+
+        assert parse_nuclei_jsonl("") == []
+        assert parse_nuclei_jsonl("   \n  ") == []
+
+    def test_build_nuclei_command(self):
+        """build_nuclei_command should produce correct CLI command."""
+        from strix_mcp.tools import build_nuclei_command
+
+        cmd = build_nuclei_command(
+            target="https://example.com",
+            severity="critical,high",
+            rate_limit=50,
+            templates=["cves", "exposures"],
+            output_file="/tmp/results.jsonl",
+        )
+        assert "nuclei" in cmd
+        assert "-u https://example.com" in cmd
+        assert "-severity critical,high" in cmd
+        assert "-rate-limit 50" in cmd
+        assert "-t cves" in cmd
+        assert "-t exposures" in cmd
+        assert "-jsonl" in cmd
+        assert "-o /tmp/results.jsonl" in cmd
+
+    def test_build_nuclei_command_no_templates(self):
+        """Without templates, command should not include -t flags."""
+        from strix_mcp.tools import build_nuclei_command
+
+        cmd = build_nuclei_command(
+            target="https://example.com",
+            severity="critical,high,medium",
+            rate_limit=100,
+            templates=None,
+            output_file="/tmp/results.jsonl",
+        )
+        assert "-t " not in cmd

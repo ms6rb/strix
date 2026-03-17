@@ -144,6 +144,57 @@ def _normalize_severity(severity: str) -> str:
     return normed if normed in _SEVERITY_ORDER else "info"
 
 
+# --- Nuclei JSONL parsing ---
+
+def parse_nuclei_jsonl(jsonl: str) -> list[dict[str, Any]]:
+    """Parse nuclei JSONL output into structured findings.
+
+    Each valid line becomes a dict with keys: template_id, url, severity, name, description.
+    Malformed lines are silently skipped.
+    """
+    findings: list[dict[str, Any]] = []
+    for line in jsonl.strip().splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            data = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        info = data.get("info", {})
+        findings.append({
+            "template_id": data.get("template-id", "unknown"),
+            "url": data.get("matched-at", ""),
+            "severity": data.get("severity", "info"),
+            "name": info.get("name", ""),
+            "description": info.get("description", ""),
+        })
+    return findings
+
+
+def build_nuclei_command(
+    target: str,
+    severity: str,
+    rate_limit: int,
+    templates: list[str] | None,
+    output_file: str,
+) -> str:
+    """Build a nuclei CLI command string."""
+    parts = [
+        "nuclei",
+        f"-u {target}",
+        f"-severity {severity}",
+        f"-rate-limit {rate_limit}",
+        "-jsonl",
+        f"-o {output_file}",
+        "-silent",
+    ]
+    if templates:
+        for t in templates:
+            parts.append(f"-t {t}")
+    return " ".join(parts)
+
+
 def _deduplicate_reports(
     reports: list[dict[str, Any]],
 ) -> list[dict[str, Any]]:
@@ -629,6 +680,135 @@ def register_tools(mcp: FastMCP, sandbox: SandboxManager) -> None:
             "total_chains": len(all_chains),
             "new_chains": new_count,
             "chains": all_chains,
+        })
+
+    # --- Recon Tools ---
+
+    @mcp.tool()
+    async def nuclei_scan(
+        target: str,
+        templates: list[str] | None = None,
+        severity: str = "critical,high,medium",
+        rate_limit: int = 100,
+        timeout: int = 600,
+        agent_id: str | None = None,
+    ) -> str:
+        """Run nuclei vulnerability scanner against a target.
+
+        Launches nuclei in the sandbox, parses structured output,
+        and auto-files confirmed findings as vulnerability reports.
+
+        target: URL or host to scan
+        templates: template categories (e.g. ["cves", "exposures"]). Defaults to all.
+        severity: comma-separated severity filter (default "critical,high,medium")
+        rate_limit: max requests per second (default 100)
+        timeout: max seconds to wait for completion (default 600)
+        agent_id: subagent identifier from dispatch_agent (omit for coordinator)"""
+        scan = sandbox.active_scan
+        if scan is None:
+            return json.dumps({"error": "No active scan. Call start_scan first."})
+
+        output_file = f"/tmp/nuclei_{uuid.uuid4().hex[:8]}.jsonl"
+        cmd = build_nuclei_command(
+            target=target,
+            severity=severity,
+            rate_limit=rate_limit,
+            templates=templates,
+            output_file=output_file,
+        )
+
+        # Launch nuclei in background
+        bg_cmd = f"nohup {cmd} > /dev/null 2>&1 & echo $!"
+        launch_result = await sandbox.proxy_tool("terminal_execute", {
+            "command": bg_cmd,
+            "timeout": 10,
+            **({"agent_id": agent_id} if agent_id else {}),
+        })
+        pid = ""
+        if isinstance(launch_result, dict):
+            output = launch_result.get("output", "")
+            pid = output.strip().splitlines()[-1].strip() if output.strip() else ""
+
+        # Poll for completion
+        import asyncio
+        elapsed = 0
+        poll_interval = 15
+        timed_out = False
+        while elapsed < timeout:
+            await asyncio.sleep(poll_interval)
+            elapsed += poll_interval
+            check = await sandbox.proxy_tool("terminal_execute", {
+                "command": f"kill -0 {pid} 2>/dev/null && echo running || echo done",
+                "timeout": 5,
+                **({"agent_id": agent_id} if agent_id else {}),
+            })
+            status = ""
+            if isinstance(check, dict):
+                status = check.get("output", "").strip()
+            if "done" in status:
+                break
+        else:
+            timed_out = True
+
+        # Read results file
+        read_result = await sandbox.proxy_tool("terminal_execute", {
+            "command": f"cat {output_file} 2>/dev/null || echo ''",
+            "timeout": 10,
+            **({"agent_id": agent_id} if agent_id else {}),
+        })
+        jsonl_output = ""
+        if isinstance(read_result, dict):
+            jsonl_output = read_result.get("output", "")
+
+        # Parse findings
+        findings = parse_nuclei_jsonl(jsonl_output)
+
+        # Auto-file via tracer (requires active tracer)
+        tracer = get_global_tracer()
+        if tracer is None:
+            return json.dumps({
+                "error": "No tracer active — nuclei findings cannot be filed. Ensure start_scan was called.",
+                "total_findings": len(findings),
+                "findings": [
+                    {"template_id": f["template_id"], "severity": f["severity"], "url": f["url"]}
+                    for f in findings
+                ],
+            })
+
+        filed = 0
+        skipped = 0
+        for f in findings:
+            title = f"{f['name']} — {f['url']}"
+            existing = tracer.get_existing_vulnerabilities()
+            normalized = _normalize_title(title)
+            if _find_duplicate(normalized, existing) is not None:
+                skipped += 1
+                continue
+            tracer.add_vulnerability_report(
+                title=title,
+                severity=_normalize_severity(f["severity"]),
+                description=f"**Nuclei template:** {f['template_id']}\n\n{f['description']}",
+                endpoint=f["url"],
+            )
+            filed += 1
+
+        severity_breakdown: dict[str, int] = {}
+        for f in findings:
+            sev = _normalize_severity(f["severity"])
+            severity_breakdown[sev] = severity_breakdown.get(sev, 0) + 1
+
+        return json.dumps({
+            "target": target,
+            "templates_used": templates or ["all"],
+            "total_findings": len(findings),
+            "auto_filed": filed,
+            "skipped_duplicates": skipped,
+            "timed_out": timed_out,
+            "severity_breakdown": severity_breakdown,
+            "findings": [
+                {"template_id": f["template_id"], "severity": f["severity"], "url": f["url"]}
+                for f in findings
+            ],
         })
 
     # --- Proxied Tools ---
