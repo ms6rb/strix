@@ -4,7 +4,7 @@ set -euo pipefail
 
 APP=strix
 REPO="usestrix/strix"
-STRIX_IMAGE="ghcr.io/usestrix/strix-sandbox:0.1.12"
+STRIX_IMAGE="ghcr.io/usestrix/strix-sandbox:0.1.13"
 
 MUTED='\033[0;2m'
 RED='\033[0;31m'
@@ -335,14 +335,11 @@ echo -e "${MUTED}  AI Penetration Testing Agent${NC}"
 echo ""
 echo -e "${MUTED}To get started:${NC}"
 echo ""
-echo -e "  ${CYAN}1.${NC} Get your Strix API key:"
-echo -e "     ${MUTED}https://models.strix.ai${NC}"
-echo ""
-echo -e "  ${CYAN}2.${NC} Set your environment:"
+echo -e "  ${CYAN}1.${NC} Set your environment:"
 echo -e "     ${MUTED}export LLM_API_KEY='your-api-key'${NC}"
-echo -e "     ${MUTED}export STRIX_LLM='strix/gpt-5'${NC}"
+echo -e "     ${MUTED}export STRIX_LLM='openai/gpt-5.4'${NC}"
 echo ""
-echo -e "  ${CYAN}3.${NC} Run a penetration test:"
+echo -e "  ${CYAN}2.${NC} Run a penetration test:"
 echo -e "     ${MUTED}strix --target https://example.com${NC}"
 echo ""
 echo -e "${MUTED}For more information visit ${NC}https://strix.ai"

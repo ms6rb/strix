@@ -32,6 +32,10 @@
 </div>
 
 
+
+> [!TIP]
+> **New!** Strix integrates seamlessly with GitHub Actions and CI/CD pipelines. Automatically scan for vulnerabilities on every pull request and block insecure code before it reaches production!
+
 ---
 
 
@@ -69,9 +73,7 @@ Strix are autonomous AI agents that act just like real hackers - they run your c
 
 **Prerequisites:**
 - Docker (running)
-- An LLM API key:
-  - Any [supported provider](https://docs.strix.ai/llm-providers/overview) (OpenAI, Anthropic, Google, etc.)
-  - Or [Strix Router](https://models.strix.ai) — single API key for multiple providers
+- An LLM API key from any [supported provider](https://docs.strix.ai/llm-providers/overview) (OpenAI, Anthropic, Google, etc.)
 
 ### Installation & First Scan
 
@@ -80,7 +82,7 @@ Strix are autonomous AI agents that act just like real hackers - they run your c
 curl -sSL https://strix.ai/install | bash
 
 # Configure your AI provider
-export STRIX_LLM="openai/gpt-5"  # or "strix/gpt-5" via Strix Router (https://models.strix.ai)
+export STRIX_LLM="openai/gpt-5.4"
 export LLM_API_KEY="your-api-key"
 
 # Run your first security assessment
@@ -221,7 +223,7 @@ jobs:
 ### Configuration
 
 ```bash
-export STRIX_LLM="openai/gpt-5"
+export STRIX_LLM="openai/gpt-5.4"
 export LLM_API_KEY="your-api-key"
 
 # Optional
@@ -235,7 +237,7 @@ export STRIX_REASONING_EFFORT="high"  # control thinking effort (default: high, 
 
 **Recommended models for best results:**
 
-- [OpenAI GPT-5](https://openai.com/api/) — `openai/gpt-5`
+- [OpenAI GPT-5.4](https://openai.com/api/) — `openai/gpt-5.4`
 - [Anthropic Claude Sonnet 4.6](https://claude.com/platform/api) — `anthropic/claude-sonnet-4-6`
 - [Google Gemini 3 Pro Preview](https://cloud.google.com/vertex-ai) — `vertex_ai/gemini-3-pro-preview`
 

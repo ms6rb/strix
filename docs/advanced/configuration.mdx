@@ -8,7 +8,7 @@ Configure Strix using environment variables or a config file.
 ## LLM Configuration
 
 <ParamField path="STRIX_LLM" type="string" required>
-  Model name in LiteLLM format (e.g., `openai/gpt-5`, `anthropic/claude-sonnet-4-6`).
+  Model name in LiteLLM format (e.g., `openai/gpt-5.4`, `anthropic/claude-sonnet-4-6`).
 </ParamField>
 
 <ParamField path="LLM_API_KEY" type="string">
@@ -79,7 +79,7 @@ When remote vars are set, Strix dual-writes telemetry to both local JSONL and th
 
 ## Docker Configuration
 
-<ParamField path="STRIX_IMAGE" default="ghcr.io/usestrix/strix-sandbox:0.1.12" type="string">
+<ParamField path="STRIX_IMAGE" default="ghcr.io/usestrix/strix-sandbox:0.1.13" type="string">
   Docker image to use for the sandbox container.
 </ParamField>
 
@@ -114,7 +114,7 @@ strix --target ./app --config /path/to/config.json
 ```json
 {
   "env": {
-    "STRIX_LLM": "openai/gpt-5",
+    "STRIX_LLM": "openai/gpt-5.4",
     "LLM_API_KEY": "sk-...",
     "STRIX_REASONING_EFFORT": "high"
   }
@@ -125,7 +125,7 @@ strix --target ./app --config /path/to/config.json
 
 ```bash
 # Required
-export STRIX_LLM="openai/gpt-5"
+export STRIX_LLM="openai/gpt-5.4"
 export LLM_API_KEY="sk-..."
 
 # Optional: Enable web search

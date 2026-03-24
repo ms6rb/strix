@@ -63,6 +63,10 @@ class LLM:
         self.config = config
         self.agent_name = agent_name
         self.agent_id: str | None = None
+        self._active_skills: list[str] = list(config.skills or [])
+        self._system_prompt_context: dict[str, Any] = dict(
+            getattr(config, "system_prompt_context", {}) or {}
+        )
         self._total_stats = RequestStats()
         self.memory_compressor = MemoryCompressor(model_name=config.litellm_model)
         self.system_prompt = self._load_system_prompt(agent_name)
@@ -70,6 +74,8 @@ class LLM:
         reasoning = Config.get("strix_reasoning_effort")
         if reasoning:
             self._reasoning_effort = reasoning
+        elif config.reasoning_effort:
+            self._reasoning_effort = config.reasoning_effort
         elif config.scan_mode == "quick":
             self._reasoning_effort = "medium"
         else:
@@ -87,10 +93,7 @@ class LLM:
                 autoescape=select_autoescape(enabled_extensions=(), default_for_string=False),
             )
 
-            skills_to_load = [
-                *list(self.config.skills or []),
-                f"scan_modes/{self.config.scan_mode}",
-            ]
+            skills_to_load = self._get_skills_to_load()
             skill_content = load_skills(skills_to_load)
             env.globals["get_skill"] = lambda name: skill_content.get(name, "")
 
@@ -98,17 +101,54 @@ class LLM:
                 get_tools_prompt=get_tools_prompt,
                 loaded_skill_names=list(skill_content.keys()),
                 interactive=self.config.interactive,
+                system_prompt_context=self._system_prompt_context,
                 **skill_content,
             )
             return str(result)
         except Exception:  # noqa: BLE001
             return ""
 
+    def _get_skills_to_load(self) -> list[str]:
+        ordered_skills = [*self._active_skills]
+        ordered_skills.append(f"scan_modes/{self.config.scan_mode}")
+
+        deduped: list[str] = []
+        seen: set[str] = set()
+        for skill_name in ordered_skills:
+            if skill_name not in seen:
+                deduped.append(skill_name)
+                seen.add(skill_name)
+
+        return deduped
+
+    def add_skills(self, skill_names: list[str]) -> list[str]:
+        added: list[str] = []
+        for skill_name in skill_names:
+            if not skill_name or skill_name in self._active_skills:
+                continue
+            self._active_skills.append(skill_name)
+            added.append(skill_name)
+
+        if not added:
+            return []
+
+        updated_prompt = self._load_system_prompt(self.agent_name)
+        if updated_prompt:
+            self.system_prompt = updated_prompt
+
+        return added
+
     def set_agent_identity(self, agent_name: str | None, agent_id: str | None) -> None:
         if agent_name:
             self.agent_name = agent_name
         if agent_id:
             self.agent_id = agent_id
+
+    def set_system_prompt_context(self, context: dict[str, Any] | None) -> None:
+        self._system_prompt_context = dict(context or {})
+        updated_prompt = self._load_system_prompt(self.agent_name)
+        if updated_prompt:
+            self.system_prompt = updated_prompt
 
     async def generate(
         self, conversation_history: list[dict[str, Any]]
@@ -124,7 +164,7 @@ class LLM:
             except Exception as e:  # noqa: BLE001
                 if attempt >= max_retries or not self._should_retry(e):
                     self._raise_error(e)
-                wait = min(10, 2 * (2**attempt))
+                wait = min(90, 2 * (2**attempt))
                 await asyncio.sleep(wait)
 
     async def _stream(self, messages: list[dict[str, Any]]) -> AsyncIterator[LLMResponse]:
