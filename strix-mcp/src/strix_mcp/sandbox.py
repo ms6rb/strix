@@ -19,7 +19,9 @@ except ImportError:  # pragma: no cover - telemetry deps may be absent
 
 logger = logging.getLogger(__name__)
 
-STRIX_IMAGE = os.getenv("STRIX_IMAGE", "ghcr.io/usestrix/strix-sandbox:0.1.13")
+# NOTE: 0.1.13 has a broken empty entrypoint (upstream build bug).
+# Pinned to 0.1.12 until upstream publishes a fix.
+STRIX_IMAGE = os.getenv("STRIX_IMAGE", "ghcr.io/usestrix/strix-sandbox:0.1.12")
 
 PROBE_PATHS = [
     "/graphql", "/api", "/api/swagger", "/wp-admin", "/robots.txt",
