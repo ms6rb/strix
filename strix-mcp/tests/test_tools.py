@@ -87,7 +87,7 @@ class TestConcurrentProbing:
         assert len(PROBE_PATHS) == len(set(PROBE_PATHS))
 
 
-from strix_mcp.tools import _normalize_title, _find_duplicate, _categorize_owasp, _deduplicate_reports
+from strix_mcp.tools_helpers import _normalize_title, _find_duplicate, _categorize_owasp, _deduplicate_reports
 
 
 class TestTitleNormalization:
@@ -641,7 +641,7 @@ class TestDispatchAgentTracing:
 class TestReconNoteCategory:
     def test_recon_is_valid_category(self):
         """The 'recon' category should be accepted by the notes system."""
-        from strix_mcp.tools import VALID_NOTE_CATEGORIES
+        from strix_mcp.tools_helpers import VALID_NOTE_CATEGORIES
         assert "recon" in VALID_NOTE_CATEGORIES
 
 
@@ -654,7 +654,7 @@ class TestNucleiScan:
 
     def test_parse_nuclei_jsonl(self):
         """parse_nuclei_jsonl should extract template-id, matched-at, severity, and info."""
-        from strix_mcp.tools import parse_nuclei_jsonl
+        from strix_mcp.tools_helpers import parse_nuclei_jsonl
 
         jsonl = self._make_jsonl([
             {
@@ -679,7 +679,7 @@ class TestNucleiScan:
 
     def test_parse_nuclei_jsonl_skips_bad_lines(self):
         """Malformed JSONL lines should be skipped, not crash."""
-        from strix_mcp.tools import parse_nuclei_jsonl
+        from strix_mcp.tools_helpers import parse_nuclei_jsonl
 
         jsonl = 'not valid json\n{"template-id": "ok", "matched-at": "https://x.com", "severity": "low", "info": {"name": "OK", "description": "ok"}}\n{broken'
         findings = parse_nuclei_jsonl(jsonl)
@@ -688,14 +688,14 @@ class TestNucleiScan:
 
     def test_parse_nuclei_jsonl_empty(self):
         """Empty JSONL should return empty list."""
-        from strix_mcp.tools import parse_nuclei_jsonl
+        from strix_mcp.tools_helpers import parse_nuclei_jsonl
 
         assert parse_nuclei_jsonl("") == []
         assert parse_nuclei_jsonl("   \n  ") == []
 
     def test_build_nuclei_command(self):
         """build_nuclei_command should produce correct CLI command."""
-        from strix_mcp.tools import build_nuclei_command
+        from strix_mcp.tools_helpers import build_nuclei_command
 
         cmd = build_nuclei_command(
             target="https://example.com",
@@ -715,7 +715,7 @@ class TestNucleiScan:
 
     def test_build_nuclei_command_no_templates(self):
         """Without templates, command should not include -t flags."""
-        from strix_mcp.tools import build_nuclei_command
+        from strix_mcp.tools_helpers import build_nuclei_command
 
         cmd = build_nuclei_command(
             target="https://example.com",
@@ -730,7 +730,7 @@ class TestNucleiScan:
 class TestSourcemapHelpers:
     def test_extract_script_urls(self):
         """extract_script_urls should find all script src attributes."""
-        from strix_mcp.tools import extract_script_urls
+        from strix_mcp.tools_helpers import extract_script_urls
 
         html = '''<html>
         <script src="/assets/main.js"></script>
@@ -746,33 +746,33 @@ class TestSourcemapHelpers:
 
     def test_extract_script_urls_empty(self):
         """No script tags should return empty list."""
-        from strix_mcp.tools import extract_script_urls
+        from strix_mcp.tools_helpers import extract_script_urls
 
         assert extract_script_urls("<html><body>hi</body></html>", "https://x.com") == []
 
     def test_extract_sourcemap_url(self):
         """extract_sourcemap_url should find sourceMappingURL comment."""
-        from strix_mcp.tools import extract_sourcemap_url
+        from strix_mcp.tools_helpers import extract_sourcemap_url
 
         js = "var x=1;\n//# sourceMappingURL=main.js.map"
         assert extract_sourcemap_url(js) == "main.js.map"
 
     def test_extract_sourcemap_url_at_syntax(self):
         """Should also find //@ sourceMappingURL syntax."""
-        from strix_mcp.tools import extract_sourcemap_url
+        from strix_mcp.tools_helpers import extract_sourcemap_url
 
         js = "var x=1;\n//@ sourceMappingURL=old.js.map"
         assert extract_sourcemap_url(js) == "old.js.map"
 
     def test_extract_sourcemap_url_not_found(self):
         """No sourceMappingURL should return None."""
-        from strix_mcp.tools import extract_sourcemap_url
+        from strix_mcp.tools_helpers import extract_sourcemap_url
 
         assert extract_sourcemap_url("var x=1;") is None
 
     def test_scan_for_notable_patterns(self):
         """scan_for_notable should find API_KEY and SECRET patterns."""
-        from strix_mcp.tools import scan_for_notable
+        from strix_mcp.tools_helpers import scan_for_notable
 
         sources = {
             "src/config.ts": "const API_KEY = 'abc123';\nconst name = 'test';",
