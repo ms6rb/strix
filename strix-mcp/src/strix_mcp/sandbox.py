@@ -19,7 +19,7 @@ except ImportError:  # pragma: no cover - telemetry deps may be absent
 
 logger = logging.getLogger(__name__)
 
-STRIX_IMAGE = os.getenv("STRIX_IMAGE", "ghcr.io/usestrix/strix-sandbox:0.1.12")
+STRIX_IMAGE = os.getenv("STRIX_IMAGE", "ghcr.io/usestrix/strix-sandbox:0.1.13")
 
 PROBE_PATHS = [
     "/graphql", "/api", "/api/swagger", "/wp-admin", "/robots.txt",
@@ -41,6 +41,7 @@ class ScanState:
     agent_counter: int = 0
     registered_agents: dict[str, str] = field(default_factory=dict)
     started_at: datetime = field(default_factory=lambda: datetime.now(UTC))
+    loaded_skills: set[str] = field(default_factory=set)
 
     def __post_init__(self) -> None:
         if self.default_agent_id and self.default_agent_id not in self.registered_agents:

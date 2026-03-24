@@ -6,7 +6,7 @@ and provides dispatch payloads for follow-up agents.
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import Any
 
 
@@ -107,8 +107,7 @@ CHAIN_RULES: list[ChainRule] = [
 _CODE_TARGET_TEMPLATE = """You are a security testing specialist. Your target code is at /workspace.
 
 **FIRST — Load your knowledge modules:**
-Call the `get_module` tool for each of these modules and read the full content carefully. They contain advanced exploitation techniques, bypass methods, and validation requirements that you MUST use:
-{module_list}
+Call `load_skill("{module_list}")` to load all your assigned skills at once. Read the returned content carefully — it contains advanced exploitation techniques, bypass methods, and validation requirements you MUST use.
 
 **Use `agent_id="{agent_id}"` for ALL Strix tool calls** (terminal_execute, browser_action, send_request, python_action, list_files, search_files, etc.)
 
@@ -129,8 +128,7 @@ Call the `get_module` tool for each of these modules and read the full content c
 _WEB_ONLY_TEMPLATE = """You are a security testing specialist. Your target is a LIVE WEB APPLICATION — there is no source code to review.
 
 **FIRST — Load your knowledge modules:**
-Call the `get_module` tool for each of these modules and read the full content carefully:
-{module_list}
+Call `load_skill("{module_list}")` to load all your assigned skills at once. Read the returned content carefully — it contains exact tool syntax, exploitation techniques, and bypass methods you MUST use.
 
 **Use `agent_id="{agent_id}"` for ALL Strix tool calls.**
 
@@ -182,7 +180,7 @@ def build_agent_prompt(
         Optional dict with 'finding_a', 'finding_b', 'chain_name'
         for Phase 2 chain agents.
     """
-    module_list = "\n".join(f'- get_module("{m}")' for m in modules)
+    module_list = ",".join(modules)
 
     chain_section = ""
     if chain_context:
@@ -264,3 +262,263 @@ def detect_chains(
             })
 
     return detected
+
+
+# --- Cross-tool chain reasoning ---
+
+
+def reason_cross_tool_chains(
+    firebase_results: dict[str, Any] | None = None,
+    js_analysis: dict[str, Any] | None = None,
+    services: dict[str, Any] | None = None,
+    session_comparison: dict[str, Any] | None = None,
+    api_discovery: dict[str, Any] | None = None,
+    vuln_reports: list[dict[str, Any]] | None = None,
+) -> list[dict[str, Any]]:
+    """Reason about vulnerability chains across tool outputs.
+
+    Takes structured results from firebase_audit, analyze_js_bundles,
+    discover_services, compare_sessions, discover_api, and vulnerability
+    reports. Returns chain hypotheses with evidence, description, missing
+    links, and next actions.
+    """
+    chains: list[dict[str, Any]] = []
+    firebase = firebase_results or {}
+    js = js_analysis or {}
+    svc = services or {}
+    sessions = session_comparison or {}
+    api = api_discovery or {}
+    vulns = vuln_reports or []
+
+    vuln_titles = " ".join(v.get("title", "").lower() for v in vulns)
+
+    # --- Firebase + JS bundle chains ---
+    fb_auth = firebase.get("auth", {})
+    fb_firestore = firebase.get("firestore", {})
+    fb_acl = fb_firestore.get("acl_matrix", {})
+    js_collections = set(js.get("collection_names", []))
+    js_endpoints = js.get("api_endpoints", [])
+
+    # Chain: writable collection + client reads from it → stored XSS / data injection
+    for coll, auth_states in fb_acl.items():
+        writable_by: list[str] = []
+        for auth_label, ops in auth_states.items():
+            if ops.get("create") == "allowed":
+                writable_by.append(auth_label)
+
+        if writable_by and coll in js_collections:
+            chains.append(_chain(
+                name=f"Data injection via writable '{coll}' collection",
+                severity="critical",
+                evidence=[
+                    f"Firestore collection '{coll}' is writable by: {', '.join(writable_by)}",
+                    f"JS bundle reads from '{coll}' collection (found in client code)",
+                ],
+                chain_description=(
+                    f"An attacker can write to '{coll}' and the client app reads from it. "
+                    f"If the app renders fields without sanitization, this is stored XSS. "
+                    f"If the app trusts field values for logic, this is data tampering."
+                ),
+                missing=[
+                    f"Verify which fields from '{coll}' are rendered in the UI",
+                    "Check if client sanitizes field values before rendering",
+                    "Identify if any fields control app behavior (roles, permissions, URLs)",
+                ],
+                next_action=(
+                    f"Write a test document to '{coll}' with XSS payloads in all string fields. "
+                    "Then browse the app and check if payloads execute."
+                ),
+            ))
+
+    # Chain: open signup + writable collection → unauthenticated data injection
+    if fb_auth.get("anonymous_signup") == "open" or fb_auth.get("email_signup") == "open":
+        signup_method = "anonymous" if fb_auth.get("anonymous_signup") == "open" else "email"
+        for coll, auth_states in fb_acl.items():
+            for auth_label, ops in auth_states.items():
+                if auth_label in ("anonymous", "email_signup") and ops.get("create") == "allowed":
+                    chains.append(_chain(
+                        name=f"Unauthenticated write via {signup_method} signup → '{coll}'",
+                        severity="high",
+                        evidence=[
+                            f"Firebase {signup_method} signup is open",
+                            f"Collection '{coll}' writable by {auth_label}",
+                        ],
+                        chain_description=(
+                            f"Anyone can create a {signup_method} account and write to '{coll}'. "
+                            "Combined with client-side rendering, this could enable stored XSS or data corruption."
+                        ),
+                        missing=[
+                            f"Check what data in '{coll}' is visible to other users",
+                            "Test if injected data is rendered or processed by the application",
+                        ],
+                        next_action=(
+                            f"Create {signup_method} account, write test data to '{coll}', "
+                            "then check if it appears for other users."
+                        ),
+                    ))
+                    break  # one chain per collection is enough
+
+    # Chain: readable collection with user data + IDOR potential
+    for coll, auth_states in fb_acl.items():
+        listable_by: list[str] = []
+        for auth_label, ops in auth_states.items():
+            if "allowed" in ops.get("list", ""):
+                listable_by.append(auth_label)
+        if listable_by and coll in ("users", "accounts", "profiles", "members"):
+            chains.append(_chain(
+                name=f"User data exposure via listable '{coll}' collection",
+                severity="high",
+                evidence=[
+                    f"Collection '{coll}' is listable by: {', '.join(listable_by)}",
+                    f"'{coll}' likely contains user PII (emails, names, settings)",
+                ],
+                chain_description=(
+                    f"Any {listable_by[0]} user can list all documents in '{coll}'. "
+                    "This exposes user data across accounts (horizontal IDOR)."
+                ),
+                missing=[
+                    f"Retrieve sample documents from '{coll}' and check for PII fields",
+                    "Verify if UIDs from this collection can be used to access other resources",
+                ],
+                next_action=f"List documents in '{coll}' and examine field contents for sensitive data.",
+            ))
+
+    # --- Third-party service chains ---
+    svc_discovered = svc.get("discovered_services", {})
+    svc_probes = svc.get("probes", {})
+
+    # Chain: accessible Sanity CMS + sensitive document types
+    for probe_key, probe_result in svc_probes.items():
+        if "sanity" in probe_key and probe_result.get("status") == "accessible":
+            doc_types = probe_result.get("document_types", [])
+            chains.append(_chain(
+                name="Publicly accessible Sanity CMS with data exposure",
+                severity="high",
+                evidence=[
+                    f"Sanity CMS is publicly queryable (project: {probe_key.replace('sanity_', '')})",
+                    f"Document types found: {', '.join(doc_types[:10])}",
+                ],
+                chain_description=(
+                    "The Sanity CMS dataset is readable without authentication. "
+                    "GROQ queries can extract all documents — potentially including "
+                    "internal content, draft pages, AI prompts, configuration, and user data."
+                ),
+                missing=[
+                    "Run comprehensive GROQ queries to enumerate all document types and fields",
+                    "Check for sensitive content: API keys, internal docs, user PII",
+                    "Test if write operations are also open",
+                ],
+                next_action="Run `*[_type != \"\"][0...100]{...}` GROQ query to dump all documents.",
+            ))
+
+    # --- Session comparison chains ---
+    if sessions.get("results"):
+        divergent = [r for r in sessions["results"] if r.get("classification") == "divergent"]
+        b_only = [r for r in sessions["results"] if r.get("classification") == "b_only"]
+
+        if divergent:
+            chains.append(_chain(
+                name=f"Authorization divergence on {len(divergent)} endpoints",
+                severity="high",
+                evidence=[
+                    f"{len(divergent)} endpoints returned different responses for different auth contexts",
+                    f"Endpoints: {', '.join(r['method'] + ' ' + r['path'] for r in divergent[:5])}",
+                ],
+                chain_description=(
+                    "Different authentication contexts receive different data from the same endpoints. "
+                    "This could indicate broken access control, data leakage, or IDOR vulnerabilities."
+                ),
+                missing=[
+                    "Compare response bodies to identify what data differs",
+                    "Check if lower-privileged session can access higher-privileged data by manipulating IDs",
+                ],
+                next_action="Use view_request to inspect divergent responses and identify leaked data.",
+            ))
+
+        if b_only:
+            chains.append(_chain(
+                name=f"Unexpected access: {len(b_only)} endpoints accessible to lower-privilege session",
+                severity="critical",
+                evidence=[
+                    f"{len(b_only)} endpoints are accessible to session B but denied to session A",
+                    f"Endpoints: {', '.join(r['method'] + ' ' + r['path'] for r in b_only[:5])}",
+                ],
+                chain_description=(
+                    "The lower-privileged session has access to endpoints denied to the higher-privileged one. "
+                    "This is a strong indicator of broken access control or misconfigured authorization."
+                ),
+                missing=["Verify these endpoints contain meaningful data or functionality"],
+                next_action="Investigate each b_only endpoint to confirm the access control issue.",
+            ))
+
+    # --- API discovery chains ---
+    if api.get("graphql", {}).get("introspection") == "enabled":
+        chains.append(_chain(
+            name="GraphQL introspection enabled — full schema exposed",
+            severity="medium",
+            evidence=["GraphQL introspection query returned the full type schema"],
+            chain_description=(
+                "The GraphQL schema is fully enumerable. An attacker can discover all queries, "
+                "mutations, and types to find sensitive operations and data access paths."
+            ),
+            missing=[
+                "Enumerate all mutations for state-changing operations",
+                "Check for authorization on sensitive queries/mutations",
+            ],
+            next_action="Load the 'graphql' skill and run a full introspection analysis.",
+        ))
+
+    # --- JS bundle + vuln report cross-references ---
+    js_secrets = js.get("secrets", [])
+    if js_secrets:
+        chains.append(_chain(
+            name=f"Secrets found in JS bundles ({len(js_secrets)} occurrences)",
+            severity="high",
+            evidence=[f"Hardcoded secrets/keys in client bundles: {', '.join(js_secrets[:5])}"],
+            chain_description=(
+                "API keys, tokens, or credentials are embedded in client-side JavaScript. "
+                "These are accessible to any user and may grant server-side access."
+            ),
+            missing=[
+                "Test each key/token to determine its scope and permissions",
+                "Check if keys are publishable (expected) or secret (vulnerability)",
+            ],
+            next_action="Extract each key and test its scope with the corresponding service API.",
+        ))
+
+    internal_hosts = js.get("internal_hostnames", [])
+    if internal_hosts and "ssrf" in vuln_titles:
+        chains.append(_chain(
+            name="SSRF + internal hostnames from JS bundles",
+            severity="critical",
+            evidence=[
+                "SSRF vulnerability found in reports",
+                f"Internal hostnames leaked in JS: {', '.join(internal_hosts[:5])}",
+            ],
+            chain_description=(
+                "An SSRF vulnerability combined with leaked internal hostnames enables "
+                "targeted attacks against internal infrastructure."
+            ),
+            missing=["Test SSRF against each internal hostname"],
+            next_action=f"Use the SSRF to probe: {', '.join(internal_hosts[:3])}",
+        ))
+
+    return chains
+
+
+def _chain(
+    name: str,
+    severity: str,
+    evidence: list[str],
+    chain_description: str,
+    missing: list[str],
+    next_action: str,
+) -> dict[str, Any]:
+    return {
+        "name": name,
+        "severity": severity,
+        "evidence": evidence,
+        "chain_description": chain_description,
+        "missing": missing,
+        "next_action": next_action,
+    }

@@ -1,5 +1,5 @@
 import pytest
-from strix_mcp.chaining import CHAIN_RULES, ChainRule, detect_chains, build_agent_prompt
+from strix_mcp.chaining import CHAIN_RULES, ChainRule, detect_chains, build_agent_prompt, reason_cross_tool_chains
 
 
 class TestChainRules:
@@ -129,14 +129,13 @@ class TestBuildAgentPrompt:
         assert 'agent_id="mcp_agent_1"' in prompt
 
     def test_code_target_prompt_contains_modules(self):
-        """Prompt should list get_module calls for each module."""
+        """Prompt should include load_skill with comma-separated modules."""
         prompt = build_agent_prompt(
             task="Test auth",
             modules=["authentication_jwt", "idor"],
             agent_id="mcp_agent_1",
         )
-        assert 'get_module("authentication_jwt")' in prompt
-        assert 'get_module("idor")' in prompt
+        assert 'load_skill("authentication_jwt,idor")' in prompt
 
     def test_code_target_prompt_contains_task(self):
         """Prompt should include the task description."""
@@ -309,3 +308,118 @@ class TestPendingChainsTracking:
         # Second detection — all fired, nothing new
         chains2 = detect_chains(reports, fired=fired)
         assert len(chains2) == 0
+
+
+class TestReasonCrossToolChains:
+    """Tests for cross-tool chain reasoning."""
+
+    def test_firebase_writable_plus_js_collection(self):
+        """Writable Firestore collection + JS bundle reads from it = data injection chain."""
+        firebase = {
+            "firestore": {
+                "acl_matrix": {
+                    "users": {
+                        "anonymous": {"list": "allowed (3 docs)", "get": "allowed", "create": "allowed", "delete": "denied"},
+                    },
+                },
+            },
+            "auth": {"anonymous_signup": "open"},
+        }
+        js = {"collection_names": ["users", "settings"]}
+
+        chains = reason_cross_tool_chains(firebase_results=firebase, js_analysis=js)
+        chain_names = [c["name"] for c in chains]
+        assert any("writable" in n and "users" in n for n in chain_names)
+
+    def test_open_signup_plus_writable_collection(self):
+        """Open signup + writable collection = unauthenticated write chain."""
+        firebase = {
+            "firestore": {
+                "acl_matrix": {
+                    "posts": {
+                        "anonymous": {"list": "denied", "get": "denied", "create": "allowed", "delete": "denied"},
+                    },
+                },
+            },
+            "auth": {"anonymous_signup": "open"},
+        }
+
+        chains = reason_cross_tool_chains(firebase_results=firebase)
+        chain_names = [c["name"] for c in chains]
+        assert any("Unauthenticated write" in n for n in chain_names)
+
+    def test_sanity_accessible(self):
+        """Accessible Sanity CMS = data exposure chain."""
+        services = {
+            "discovered_services": {"sanity": ["e5fj2khm"]},
+            "probes": {
+                "sanity_e5fj2khm": {
+                    "status": "accessible",
+                    "document_types": ["article", "skill", "config"],
+                },
+            },
+        }
+
+        chains = reason_cross_tool_chains(services=services)
+        assert any("Sanity CMS" in c["name"] for c in chains)
+
+    def test_session_divergent_endpoints(self):
+        """Divergent session comparison results = access control chain."""
+        session = {
+            "results": [
+                {"classification": "divergent", "method": "GET", "path": "/api/admin"},
+                {"classification": "same", "method": "GET", "path": "/api/public"},
+            ],
+        }
+
+        chains = reason_cross_tool_chains(session_comparison=session)
+        assert any("divergence" in c["name"].lower() for c in chains)
+
+    def test_graphql_introspection_chain(self):
+        """GraphQL introspection enabled = schema exposure chain."""
+        api = {
+            "graphql": {"introspection": "enabled", "types": ["Query", "User"]},
+        }
+
+        chains = reason_cross_tool_chains(api_discovery=api)
+        assert any("GraphQL" in c["name"] for c in chains)
+
+    def test_js_secrets_chain(self):
+        """Secrets in JS bundles = credential exposure chain."""
+        js = {"secrets": ["AIzaSy...abc (20 chars) in /app.js"], "collection_names": []}
+
+        chains = reason_cross_tool_chains(js_analysis=js)
+        assert any("Secrets" in c["name"] for c in chains)
+
+    def test_ssrf_plus_internal_hosts(self):
+        """SSRF vuln + internal hosts from JS = targeted SSRF chain."""
+        js = {"internal_hostnames": ["https://10.0.1.50:8080"], "collection_names": [], "secrets": []}
+        vulns = [{"title": "SSRF in /api/proxy", "severity": "high"}]
+
+        chains = reason_cross_tool_chains(js_analysis=js, vuln_reports=vulns)
+        assert any("SSRF" in c["name"] for c in chains)
+
+    def test_no_inputs_returns_empty(self):
+        """No tool results = no chains."""
+        chains = reason_cross_tool_chains()
+        assert chains == []
+
+    def test_chain_structure(self):
+        """Each chain should have the required fields."""
+        firebase = {
+            "firestore": {"acl_matrix": {
+                "users": {"unauthenticated": {"list": "allowed (1 docs)", "get": "allowed", "create": "denied", "delete": "denied"}},
+            }},
+            "auth": {},
+        }
+
+        chains = reason_cross_tool_chains(firebase_results=firebase)
+        for chain in chains:
+            assert "name" in chain
+            assert "severity" in chain
+            assert "evidence" in chain
+            assert "chain_description" in chain
+            assert "missing" in chain
+            assert "next_action" in chain
+            assert isinstance(chain["evidence"], list)
+            assert isinstance(chain["missing"], list)
