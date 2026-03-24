@@ -5,7 +5,6 @@ import hashlib
 import json
 import re
 import uuid
-from datetime import UTC, datetime
 from typing import Any
 
 from fastmcp import FastMCP
@@ -14,13 +13,10 @@ from .sandbox import SandboxManager
 from .tools_helpers import extract_script_urls, _analyze_bundle
 
 try:
-    from strix.telemetry.tracer import Tracer, get_global_tracer, set_global_tracer
+    from strix.telemetry.tracer import get_global_tracer
 except ImportError:
-    Tracer = None  # type: ignore[assignment,misc]
     def get_global_tracer():  # type: ignore[misc]  # pragma: no cover
         return None
-    def set_global_tracer(tracer):  # type: ignore[misc]  # pragma: no cover
-        pass
 
 
 def register_analysis_tools(mcp: FastMCP, sandbox: SandboxManager) -> None:
@@ -53,9 +49,6 @@ def register_analysis_tools(mcp: FastMCP, sandbox: SandboxManager) -> None:
 
         Returns: summary with total endpoints, classification counts, and per-endpoint results
         sorted by most interesting (divergent first)."""
-        import asyncio
-        import hashlib
-
         scan = sandbox.active_scan
         if scan is None:
             return json.dumps({"error": "No active scan. Call start_scan first."})
@@ -892,7 +885,6 @@ def register_analysis_tools(mcp: FastMCP, sandbox: SandboxManager) -> None:
                     pass
 
             # --- Phase 4: Path probing with multiple content-types (concurrent) ---
-            import asyncio
             sem = asyncio.Semaphore(5)  # max 5 concurrent path probes
 
             async def _probe_path(path: str) -> dict[str, Any] | None:
@@ -1170,7 +1162,6 @@ def register_analysis_tools(mcp: FastMCP, sandbox: SandboxManager) -> None:
 
         # Phase 4: DNS TXT records
         if check_dns:
-            import asyncio
             from urllib.parse import urlparse
             hostname = urlparse(target_url).hostname or ""
             parts = hostname.split(".")

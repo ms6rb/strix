@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import json
 import logging
-import re
 import uuid
 from datetime import UTC, datetime
 from pathlib import Path
@@ -14,7 +13,7 @@ from .sandbox import SandboxManager
 from .tools_helpers import (
     _normalize_title, _find_duplicate, _categorize_owasp, _normalize_severity,
     _deduplicate_reports,
-    _SEVERITY_ORDER, VALID_NOTE_CATEGORIES,
+    _SEVERITY_ORDER,
 )
 
 try:
