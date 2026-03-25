@@ -1304,28 +1304,22 @@ def register_analysis_tools(mcp: FastMCP, sandbox: SandboxManager) -> None:
                     total += 1
             by_namespace[ns] = urls
 
-        # Also generate short-form names for targets that resolve short names
+        # Also generate short-form names (service only, no namespace cross-product)
         short_forms: list[str] = []
         for svc in service_ports:
             short_forms.append(f"{scheme}://{svc}")
-            for ns in ns_list:
-                short_forms.append(f"{scheme}://{svc}.{ns}")
 
-        # Cap output
+        # Cap output — distribute evenly across namespaces
         omitted = 0
         if total > max_urls:
+            per_ns = max(max_urls // len(by_namespace), 1)
+            new_total = 0
             for ns in by_namespace:
-                if total <= max_urls:
-                    break
-                excess = total - max_urls
-                if excess >= len(by_namespace[ns]):
-                    total -= len(by_namespace[ns])
-                    omitted += len(by_namespace[ns])
-                    by_namespace[ns] = []
-                else:
-                    by_namespace[ns] = by_namespace[ns][:-excess]
-                    omitted += excess
-                    total -= excess
+                if len(by_namespace[ns]) > per_ns:
+                    omitted += len(by_namespace[ns]) - per_ns
+                    by_namespace[ns] = by_namespace[ns][:per_ns]
+                new_total += len(by_namespace[ns])
+            total = new_total
 
         result: dict[str, Any] = {
             "total_urls": total,

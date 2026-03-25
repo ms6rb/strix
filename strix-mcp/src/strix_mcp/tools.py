@@ -489,11 +489,22 @@ def register_tools(mcp: FastMCP, sandbox: SandboxManager) -> None:
             result["failed_skills"] = failed
 
         if summary_only:
-            # Return just names and first-line descriptions
-            result["skill_summaries"] = {
-                name: content.split("\n", 1)[0][:200]
-                for name, content in loaded_content.items()
-            }
+            # Return title + first non-empty paragraph for context
+            summaries: dict[str, str] = {}
+            for name, content in loaded_content.items():
+                lines = content.strip().splitlines()
+                summary_parts: list[str] = []
+                for line in lines:
+                    stripped = line.strip()
+                    if not stripped:
+                        if summary_parts and not summary_parts[-1].startswith("#"):
+                            break  # end of first paragraph
+                        continue
+                    summary_parts.append(stripped)
+                    if len(summary_parts) >= 4:
+                        break
+                summaries[name] = " ".join(summary_parts)[:500]
+            result["skill_summaries"] = summaries
         else:
             # Apply max_content_length: truncate largest skills first
             total_len = sum(len(c) for c in loaded_content.values())

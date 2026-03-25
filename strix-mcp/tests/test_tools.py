@@ -546,9 +546,10 @@ class TestLoadSkillTool:
         assert "skill_summaries" in result
         assert "idor" in result["skill_summaries"]
         assert "xss" in result["skill_summaries"]
-        # Summaries should be short strings (first line)
+        # Summaries should include title + first paragraph (up to 500 chars)
         for summary in result["skill_summaries"].values():
-            assert len(summary) <= 200
+            assert len(summary) <= 500
+            assert len(summary) > 10  # not just empty
 
     @pytest.mark.asyncio
     async def test_max_content_length_no_truncation_when_under(self, mcp_no_scan):
