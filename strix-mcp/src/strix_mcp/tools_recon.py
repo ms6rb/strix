@@ -150,9 +150,21 @@ def register_recon_tools(mcp: FastMCP, sandbox: SandboxManager) -> None:
             sev = _normalize_severity(f["severity"])
             severity_breakdown[sev] = severity_breakdown.get(sev, 0) + 1
 
+        # Extract last stats line from stderr for progress info
+        last_stats: dict[str, Any] = {}
+        if nuclei_stderr:
+            for line in reversed(nuclei_stderr.splitlines()):
+                line = line.strip()
+                if line.startswith("{") and "requests" in line:
+                    try:
+                        last_stats = json.loads(line)
+                    except json.JSONDecodeError:
+                        pass
+                    break
+
         result_data: dict[str, Any] = {
             "target": target,
-            "templates_used": templates or ["all"],
+            "templates_used": templates or ["exposure,misconfig,cve,takeover,default-login,token (default tags)"],
             "total_findings": len(findings),
             "auto_filed": filed,
             "skipped_duplicates": skipped,
@@ -163,6 +175,8 @@ def register_recon_tools(mcp: FastMCP, sandbox: SandboxManager) -> None:
                 for f in findings
             ],
         }
+        if last_stats:
+            result_data["scan_progress"] = last_stats
         if nuclei_stderr:
             result_data["nuclei_stderr"] = nuclei_stderr[:1000]
         return json.dumps(result_data)

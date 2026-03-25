@@ -170,11 +170,18 @@ def build_nuclei_command(
         f"-rate-limit {rate_limit}",
         "-jsonl",
         f"-o {output_file}",
-        "-silent",
+        "-stats",             # show progress stats on stderr
+        "-stats-interval 10", # every 10 seconds
+        "-no-httpx",          # skip httpx probe (target already known live)
+        "-env-vars=false",    # bypass system proxy for direct scanning
     ]
     if templates:
         for t in templates:
             parts.append(f"-t {t}")
+    else:
+        # Default: use focused template tags instead of loading all 2000+
+        # These cover the highest-value checks without the full scan overhead
+        parts.append("-tags exposure,misconfig,cve,takeover,default-login,token")
     return " ".join(parts)
 
 
