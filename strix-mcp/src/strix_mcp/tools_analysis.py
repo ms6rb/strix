@@ -1379,6 +1379,9 @@ def register_analysis_tools(mcp: FastMCP, sandbox: SandboxManager) -> None:
             results["probes"].append(tecl_result)
 
             # --- Phase 4: TE.TE obfuscation variants ---
+            # NOTE: dual TE header probes may not work as intended — httpx
+            # normalizes header names to lowercase, merging duplicate keys.
+            # Results for dual_te_* variants should be confirmed with raw sockets.
             te_obfuscations: list[tuple[str, dict[str, str]]] = [
                 ("xchunked", {"Transfer-Encoding": "xchunked"}),
                 ("space_before_colon", {"Transfer-Encoding ": "chunked"}),
@@ -1399,14 +1402,15 @@ def register_analysis_tools(mcp: FastMCP, sandbox: SandboxManager) -> None:
                 results["te_obfuscation_results"].append(te_result)
 
             # --- Phase 5: TE.0 probe ---
-            # Send Transfer-Encoding header with no chunked body.
+            # Send TE:chunked with CL:0 but include chunked data — if front-end
+            # strips TE and uses CL:0, the chunked data stays in the pipeline.
             te0_result = await _probe(
                 "TE.0",
                 {
                     "Transfer-Encoding": "chunked",
                     "Content-Length": "0",
                 },
-                b"",
+                b"1\r\nZ\r\n0\r\n\r\n",
             )
             results["probes"].append(te0_result)
 

@@ -114,6 +114,8 @@ Before vulnerability testing, run reconnaissance to map the full attack surface.
 - If internal packages found → dispatch supply chain agent with `load_skill("supply_chain")`
 - If OAuth endpoints detected → dispatch OAuth agent with `load_skill("oauth")`
 - If SAML/SSO endpoints detected → dispatch SSO agent with `load_skill("saml_sso_bypass")`
+- Run `test_request_smuggling` when target is behind a CDN or reverse proxy — detects CL.TE/TE.CL/TE.0 parser discrepancies
+- Run `test_cache_poisoning` when target uses caching (CDN detected) — finds unkeyed headers and cache deception vectors
 - Load skill `browser_security` when testing custom browsers (Electron, Chromium forks) or AI-powered browsers — contains address bar spoofing test templates, prompt injection vectors, and UI spoofing detection methodology
 - Write ALL results as structured notes: `create_note(category="recon", title="...")`
 - Stay within scope: check `scope_rules` before scanning new targets
