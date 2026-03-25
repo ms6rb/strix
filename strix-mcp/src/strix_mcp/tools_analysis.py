@@ -1199,6 +1199,339 @@ def register_analysis_tools(mcp: FastMCP, sandbox: SandboxManager) -> None:
 
         return json.dumps(results)
 
+    # --- K8s Service Enumeration Wordlist Generator ---
+
+    @mcp.tool()
+    async def k8s_enumerate(
+        target_name: str | None = None,
+        namespaces: list[str] | None = None,
+        ports: list[int] | None = None,
+    ) -> str:
+        """Generate a comprehensive K8s service enumeration wordlist for SSRF probing.
+        No sandbox required.
+
+        Returns service URLs to test via SSRF. Feed these into send_request,
+        python_action, or the webhook URL parameter to discover internal services.
+
+        target_name: company/product name for generating custom service names (e.g. "neon")
+        namespaces: custom namespaces (default: common K8s namespaces)
+        ports: custom ports (default: common service ports)
+
+        Usage: get the URL list, then use python_action to spray them through
+        your SSRF vector and observe which ones resolve."""
+
+        # Standard K8s services
+        services = [
+            "kubernetes", "kube-dns", "metrics-server", "coredns",
+        ]
+        # AWS EKS
+        services += [
+            "aws-load-balancer-controller", "external-dns",
+            "ebs-csi-controller", "cluster-autoscaler",
+        ]
+        # Monitoring
+        services += [
+            "grafana", "prometheus", "alertmanager", "victoria-metrics",
+            "thanos", "loki", "tempo",
+        ]
+        # GitOps
+        services += [
+            "argocd-server", "flux-source-controller", "flux-helm-controller",
+        ]
+        # Security
+        services += [
+            "vault", "cert-manager", "falco", "trivy-operator",
+        ]
+        # Service mesh
+        services += [
+            "istiod", "istio-ingressgateway", "envoy", "linkerd-controller",
+        ]
+        # Auth
+        services += [
+            "keycloak", "hydra", "dex", "oauth2-proxy",
+        ]
+        # Data
+        services += [
+            "redis", "rabbitmq", "kafka", "elasticsearch", "nats",
+        ]
+
+        # Target-specific services
+        if target_name:
+            name = target_name.lower().strip()
+            services += [
+                f"{name}-api", f"{name}-proxy", f"{name}-auth",
+                f"{name}-control-plane", f"{name}-storage", f"{name}-compute",
+            ]
+
+        # Namespaces
+        default_namespaces = [
+            "default", "kube-system", "monitoring", "argocd",
+            "vault", "cert-manager", "istio-system",
+        ]
+        if target_name:
+            default_namespaces.append(target_name.lower().strip())
+        ns_list = namespaces or default_namespaces
+
+        # Ports
+        default_ports = [80, 443, 8080, 8443, 3000, 4444, 5432, 6379, 9090, 9093]
+        port_list = ports or default_ports
+
+        # Generate all combinations grouped by namespace
+        by_namespace: dict[str, list[str]] = {}
+        total = 0
+        for ns in ns_list:
+            urls: list[str] = []
+            for svc in services:
+                for port in port_list:
+                    urls.append(f"http://{svc}.{ns}.svc.cluster.local:{port}")
+                    total += 1
+            by_namespace[ns] = urls
+
+        # Also generate short-form names for targets that resolve short names
+        short_forms: list[str] = []
+        for svc in services:
+            short_forms.append(f"http://{svc}")
+            for ns in ns_list:
+                short_forms.append(f"http://{svc}.{ns}")
+
+        return json.dumps({
+            "total_urls": total,
+            "services": services,
+            "namespaces": ns_list,
+            "ports": port_list,
+            "urls_by_namespace": by_namespace,
+            "short_forms": short_forms,
+            "usage_hint": (
+                "Spray these URLs through your SSRF vector. Compare responses to a "
+                "baseline (known-bad hostname) to identify which services resolve. "
+                "Short forms work when K8s DNS search domains are configured."
+            ),
+        })
+
+    # --- Blind SSRF Oracle Builder ---
+
+    @mcp.tool()
+    async def ssrf_oracle(
+        ssrf_url: str,
+        ssrf_param: str = "url",
+        ssrf_method: str = "POST",
+        ssrf_headers: dict[str, str] | None = None,
+        ssrf_body_template: str | None = None,
+        agent_id: str | None = None,
+    ) -> str:
+        """Calibrate a blind SSRF oracle by testing response differentials.
+        Requires an active sandbox.
+
+        Given a confirmed blind SSRF endpoint, tests with known-good and known-bad
+        targets to build an oracle (retry behavior, timing, status codes) that can
+        distinguish successful from failed internal requests.
+
+        ssrf_url: the vulnerable endpoint URL
+        ssrf_param: parameter name that accepts the target URL (default "url")
+        ssrf_method: HTTP method (default POST)
+        ssrf_headers: additional headers for the SSRF request
+        ssrf_body_template: request body template with {TARGET_URL} placeholder
+        agent_id: subagent identifier from dispatch_agent
+
+        Returns: oracle calibration data — baseline responses, retry behavior,
+        timing differentials, and recommended exploitation approach."""
+
+        scan = sandbox.active_scan
+        if scan is None:
+            return json.dumps({"error": "No active scan. Call start_scan first."})
+
+        extra_headers = ssrf_headers or {}
+        method = ssrf_method.upper()
+
+        # Helper to send one SSRF probe through the sandbox proxy
+        async def _send_probe(target_url: str) -> dict[str, Any]:
+            """Send a single probe through the SSRF vector and measure response."""
+            if ssrf_body_template:
+                body_str = ssrf_body_template.replace("{TARGET_URL}", target_url)
+                try:
+                    body = json.loads(body_str)
+                except (json.JSONDecodeError, ValueError):
+                    body = body_str
+            else:
+                body = {ssrf_param: target_url}
+
+            req_kwargs: dict[str, Any] = {
+                "url": ssrf_url,
+                "method": method,
+                "headers": {
+                    "Content-Type": "application/json",
+                    **extra_headers,
+                },
+            }
+
+            if isinstance(body, dict):
+                req_kwargs["body"] = json.dumps(body)
+            else:
+                req_kwargs["body"] = str(body)
+
+            if agent_id:
+                req_kwargs["agent_id"] = agent_id
+
+            t0 = time.monotonic()
+            try:
+                resp = await sandbox.proxy_tool("send_request", req_kwargs)
+                elapsed_ms = round((time.monotonic() - t0) * 1000)
+                status = resp.get("status_code", resp.get("response", {}).get("status_code", 0))
+                body_text = resp.get("body", resp.get("response", {}).get("body", ""))
+                body_len = len(body_text) if isinstance(body_text, str) else 0
+                return {
+                    "status_code": status,
+                    "elapsed_ms": elapsed_ms,
+                    "body_length": body_len,
+                    "body_preview": body_text[:300] if isinstance(body_text, str) else "",
+                    "error": None,
+                }
+            except Exception as exc:
+                elapsed_ms = round((time.monotonic() - t0) * 1000)
+                return {
+                    "status_code": 0,
+                    "elapsed_ms": elapsed_ms,
+                    "body_length": 0,
+                    "body_preview": "",
+                    "error": str(exc),
+                }
+
+        # --- Phase 1: Baseline calibration ---
+        probe_targets = {
+            "reachable": "https://httpbin.org/status/200",
+            "unreachable": "http://192.0.2.1/",
+            "dns_fail": "http://this-domain-does-not-exist-strix-test.invalid/",
+        }
+
+        baseline: dict[str, Any] = {}
+        for label, target in probe_targets.items():
+            baseline[label] = await _send_probe(target)
+
+        # --- Phase 2: Retry oracle detection ---
+        retry_oracle: dict[str, Any] = {"detected": False}
+
+        # Probe with status 500 to see if SSRF retries
+        probe_500 = await _send_probe("https://httpbin.org/status/500")
+        probe_200 = await _send_probe("https://httpbin.org/status/200")
+
+        # If 500 takes significantly longer than 200, the server may be retrying
+        if probe_500["elapsed_ms"] > probe_200["elapsed_ms"] * 2 + 500:
+            retry_oracle["detected"] = True
+            retry_oracle["evidence"] = (
+                f"500 target took {probe_500['elapsed_ms']}ms vs "
+                f"{probe_200['elapsed_ms']}ms for 200 target — "
+                f"likely retrying on failure"
+            )
+        retry_oracle["timing_500_ms"] = probe_500["elapsed_ms"]
+        retry_oracle["timing_200_ms"] = probe_200["elapsed_ms"]
+
+        # --- Phase 3: Timing oracle detection ---
+        timing_oracle: dict[str, Any] = {"detected": False}
+
+        probe_fast = baseline["reachable"]
+        probe_slow = await _send_probe("https://httpbin.org/delay/3")
+        probe_dead = baseline["unreachable"]
+
+        fast_ms = probe_fast["elapsed_ms"]
+        slow_ms = probe_slow["elapsed_ms"]
+        dead_ms = probe_dead["elapsed_ms"]
+
+        # Timing oracle exists if slow target causes slower SSRF response
+        if slow_ms > fast_ms * 1.5 + 1000:
+            timing_oracle["detected"] = True
+            timing_oracle["evidence"] = (
+                f"Response time correlates with target: fast={fast_ms}ms, "
+                f"slow={slow_ms}ms, unreachable={dead_ms}ms"
+            )
+        timing_oracle["fast_ms"] = fast_ms
+        timing_oracle["slow_ms"] = slow_ms
+        timing_oracle["unreachable_ms"] = dead_ms
+
+        # --- Phase 4: Status differential detection ---
+        status_oracle: dict[str, Any] = {"detected": False}
+
+        statuses = {
+            probe_targets["reachable"]: baseline["reachable"]["status_code"],
+            probe_targets["unreachable"]: baseline["unreachable"]["status_code"],
+            probe_targets["dns_fail"]: baseline["dns_fail"]["status_code"],
+        }
+        unique_statuses = set(statuses.values())
+        if len(unique_statuses) > 1 and 0 not in unique_statuses:
+            status_oracle["detected"] = True
+            status_oracle["evidence"] = (
+                f"Different status codes for different targets: {statuses}"
+            )
+        status_oracle["status_map"] = statuses
+
+        # --- Phase 5: Body differential detection ---
+        body_oracle: dict[str, Any] = {"detected": False}
+        body_lengths = {
+            "reachable": baseline["reachable"]["body_length"],
+            "unreachable": baseline["unreachable"]["body_length"],
+            "dns_fail": baseline["dns_fail"]["body_length"],
+        }
+        unique_lengths = set(body_lengths.values())
+        if len(unique_lengths) > 1:
+            body_oracle["detected"] = True
+            body_oracle["evidence"] = f"Different body sizes: {body_lengths}"
+        body_oracle["body_lengths"] = body_lengths
+
+        # --- Build recommended approach ---
+        oracles_detected = []
+        if retry_oracle["detected"]:
+            oracles_detected.append("retry")
+        if timing_oracle["detected"]:
+            oracles_detected.append("timing")
+        if status_oracle["detected"]:
+            oracles_detected.append("status_differential")
+        if body_oracle["detected"]:
+            oracles_detected.append("body_differential")
+
+        if not oracles_detected:
+            recommended = (
+                "No clear oracle detected. Try: (1) use a webhook/callback URL "
+                "(e.g. webhook.site) as target to count callbacks for retry detection, "
+                "(2) increase timing thresholds with longer delays, "
+                "(3) test with error-triggering internal targets."
+            )
+        elif "status_differential" in oracles_detected:
+            recommended = (
+                "Use status code differential for port scanning — different status "
+                "codes reveal whether internal targets respond. Most reliable oracle."
+            )
+        elif "retry" in oracles_detected:
+            recommended = (
+                "Use retry oracle for port scanning — probe internal IPs and count "
+                "callbacks (via webhook.site) to determine if service is running. "
+                "500/error responses trigger retries; 200 responses do not."
+            )
+        elif "timing" in oracles_detected:
+            recommended = (
+                "Use timing oracle for service discovery — response time correlates "
+                "with target response time. Compare fast (responding service) vs "
+                "slow (non-responding IP) to identify live services."
+            )
+        else:
+            recommended = (
+                "Use body differential for service discovery — different response "
+                "body sizes indicate the SSRF target's response affects the output."
+            )
+
+        return json.dumps({
+            "type": "blind_ssrf",
+            "ssrf_endpoint": ssrf_url,
+            "oracles": {
+                "retry": retry_oracle,
+                "timing": timing_oracle,
+                "status_differential": status_oracle,
+                "body_differential": body_oracle,
+            },
+            "oracles_detected": oracles_detected,
+            "recommended_approach": recommended,
+            "baseline": baseline,
+            "total_probes_sent": 7,
+        })
+
     # --- HTTP Request Smuggling Detection (MCP-side, direct HTTP) ---
 
     @mcp.tool()
