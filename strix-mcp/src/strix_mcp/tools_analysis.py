@@ -4,6 +4,7 @@ import asyncio
 import hashlib
 import json
 import re
+import time
 import uuid
 from typing import Any
 
@@ -1195,5 +1196,520 @@ def register_analysis_tools(mcp: FastMCP, sandbox: SandboxManager) -> None:
 
         results["total_services"] = len(results["discovered_services"])
         results["total_probes"] = len(results["probes"])
+
+        return json.dumps(results)
+
+    # --- HTTP Request Smuggling Detection (MCP-side, direct HTTP) ---
+
+    @mcp.tool()
+    async def test_request_smuggling(
+        target_url: str,
+        timeout: int = 10,
+    ) -> str:
+        """Test for HTTP request smuggling vulnerabilities by probing for parser
+        discrepancies between front-end proxies and back-end servers. No sandbox required.
+
+        Tests CL.TE, TE.CL, TE.TE, and TE.0 variants. Also detects proxy/CDN
+        stack via fingerprinting headers.
+
+        target_url: base URL to test (e.g. "https://example.com")
+        timeout: seconds to wait per probe (default 10, higher values detect timing-based smuggling)
+
+        Use during reconnaissance when the target is behind a CDN or reverse proxy.
+        Load the 'request_smuggling' skill for detailed exploitation guidance."""
+        import httpx
+
+        base = target_url.rstrip("/")
+        results: dict[str, Any] = {
+            "target_url": target_url,
+            "proxy_stack": {},
+            "baseline": {},
+            "probes": [],
+            "te_obfuscation_results": [],
+            "summary": {"potential_vulnerabilities": 0, "tested_variants": 0},
+            "note": (
+                "httpx may normalize Content-Length and Transfer-Encoding headers. "
+                "Results marked 'potential' should be confirmed with raw socket probes."
+            ),
+        }
+
+        # CDN/proxy signature headers to look for
+        cdn_signatures: dict[str, str] = {
+            "cf-ray": "cloudflare",
+            "x-amz-cf-id": "cloudfront",
+            "x-akamai-transformed": "akamai",
+            "x-fastly-request-id": "fastly",
+            "x-varnish": "varnish",
+        }
+        proxy_headers = [
+            "server", "via", "x-served-by", "x-cache", "x-cache-hits",
+            "cf-ray", "x-amz-cf-id", "x-akamai-transformed",
+            "x-fastly-request-id", "x-varnish",
+        ]
+
+        async with httpx.AsyncClient(
+            timeout=timeout,
+            follow_redirects=False,
+            http1=True,
+            http2=False,
+        ) as client:
+
+            # --- Phase 1: Baseline + proxy fingerprinting ---
+            try:
+                t0 = time.monotonic()
+                baseline_resp = await client.get(
+                    base,
+                    headers={"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"},
+                )
+                baseline_time_ms = round((time.monotonic() - t0) * 1000)
+
+                results["baseline"] = {
+                    "status": baseline_resp.status_code,
+                    "response_time_ms": baseline_time_ms,
+                }
+
+                # Collect proxy stack info
+                proxy_stack: dict[str, str] = {}
+                detected_cdn: str | None = None
+                for hdr in proxy_headers:
+                    val = baseline_resp.headers.get(hdr)
+                    if val:
+                        proxy_stack[hdr] = val
+                        if hdr in cdn_signatures:
+                            detected_cdn = cdn_signatures[hdr]
+                if detected_cdn:
+                    proxy_stack["cdn"] = detected_cdn
+                results["proxy_stack"] = proxy_stack
+
+            except Exception as e:
+                results["baseline"] = {"error": str(e)}
+                return json.dumps(results)
+
+            baseline_status = baseline_resp.status_code
+            baseline_ms = baseline_time_ms
+
+            # Helper: send a probe and classify
+            async def _probe(
+                variant: str,
+                headers: dict[str, str],
+                body: bytes,
+            ) -> dict[str, Any]:
+                probe_result: dict[str, Any] = {
+                    "variant": variant,
+                    "status": "not_vulnerable",
+                    "evidence": "",
+                }
+                try:
+                    t0 = time.monotonic()
+                    resp = await client.post(
+                        base,
+                        headers={
+                            "User-Agent": "Mozilla/5.0",
+                            **headers,
+                        },
+                        content=body,
+                    )
+                    elapsed_ms = round((time.monotonic() - t0) * 1000)
+
+                    # Detect anomalies
+                    status_changed = resp.status_code != baseline_status
+                    is_error = resp.status_code in (400, 500, 501, 502)
+                    is_slow = elapsed_ms > (baseline_ms * 5 + 2000)
+
+                    if is_slow:
+                        probe_result["status"] = "potential"
+                        probe_result["evidence"] = (
+                            f"response timeout ({elapsed_ms}ms vs {baseline_ms}ms baseline)"
+                        )
+                    elif is_error and not status_changed:
+                        probe_result["evidence"] = (
+                            f"error status {resp.status_code} (same as baseline)"
+                        )
+                    elif status_changed and is_error:
+                        probe_result["status"] = "potential"
+                        probe_result["evidence"] = (
+                            f"status changed to {resp.status_code} "
+                            f"(baseline {baseline_status})"
+                        )
+                    else:
+                        probe_result["evidence"] = (
+                            f"normal {resp.status_code} response in {elapsed_ms}ms"
+                        )
+
+                    probe_result["response_status"] = resp.status_code
+                    probe_result["response_time_ms"] = elapsed_ms
+
+                except httpx.ReadTimeout:
+                    probe_result["status"] = "potential"
+                    probe_result["evidence"] = (
+                        f"read timeout ({timeout}s) — back-end may be waiting for more data"
+                    )
+                except Exception as e:
+                    probe_result["status"] = "error"
+                    probe_result["evidence"] = str(e)
+
+                return probe_result
+
+            # --- Phase 2: CL.TE probe ---
+            # Front-end uses Content-Length, back-end uses Transfer-Encoding.
+            # CL says 4 bytes, but TE body is longer — leftover poisons next request.
+            clte_body = b"1\r\nZ\r\n0\r\n\r\n"
+            clte_result = await _probe(
+                "CL.TE",
+                {
+                    "Content-Length": "4",
+                    "Transfer-Encoding": "chunked",
+                },
+                clte_body,
+            )
+            results["probes"].append(clte_result)
+
+            # --- Phase 3: TE.CL probe ---
+            # Front-end uses Transfer-Encoding, back-end uses Content-Length.
+            # TE ends at chunk 0, but CL includes extra bytes.
+            tecl_body = b"0\r\n\r\nSMUGGLED"
+            tecl_result = await _probe(
+                "TE.CL",
+                {
+                    "Content-Length": "50",
+                    "Transfer-Encoding": "chunked",
+                },
+                tecl_body,
+            )
+            results["probes"].append(tecl_result)
+
+            # --- Phase 4: TE.TE obfuscation variants ---
+            te_obfuscations: list[tuple[str, dict[str, str]]] = [
+                ("xchunked", {"Transfer-Encoding": "xchunked"}),
+                ("space_before_colon", {"Transfer-Encoding ": "chunked"}),
+                ("tab_after_colon", {"Transfer-Encoding": "\tchunked"}),
+                ("dual_te_chunked_x", {"Transfer-Encoding": "chunked", "Transfer-encoding": "x"}),
+                ("dual_te_chunked_cow", {"Transfer-Encoding": "chunked", "Transfer-encoding": "cow"}),
+            ]
+
+            for label, te_headers in te_obfuscations:
+                te_result = await _probe(
+                    f"TE.TE ({label})",
+                    {
+                        "Content-Length": "4",
+                        **te_headers,
+                    },
+                    b"1\r\nZ\r\n0\r\n\r\n",
+                )
+                results["te_obfuscation_results"].append(te_result)
+
+            # --- Phase 5: TE.0 probe ---
+            # Send Transfer-Encoding header with no chunked body.
+            te0_result = await _probe(
+                "TE.0",
+                {
+                    "Transfer-Encoding": "chunked",
+                    "Content-Length": "0",
+                },
+                b"",
+            )
+            results["probes"].append(te0_result)
+
+            # --- Summary ---
+            all_probes = results["probes"] + results["te_obfuscation_results"]
+            results["summary"]["tested_variants"] = len(all_probes)
+            results["summary"]["potential_vulnerabilities"] = sum(
+                1 for p in all_probes if p["status"] == "potential"
+            )
+
+        return json.dumps(results)
+
+    # --- Web Cache Poisoning / Cache Deception Detection (MCP-side, direct HTTP) ---
+
+    @mcp.tool()
+    async def test_cache_poisoning(
+        target_url: str,
+        paths: list[str] | None = None,
+    ) -> str:
+        """Test for web cache poisoning by systematically probing unkeyed headers
+        and cache deception via parser discrepancies. No sandbox required.
+
+        Tests unkeyed headers (X-Forwarded-Host, X-Forwarded-Scheme, etc.) and
+        cache deception paths (appending .css/.js/.png to authenticated endpoints).
+
+        target_url: base URL to test
+        paths: specific paths to test (default: /, /login, /account, /api)
+
+        Load the 'cache_poisoning' skill for detailed exploitation guidance."""
+        import httpx
+
+        base = target_url.rstrip("/")
+        test_paths = paths or ["/", "/login", "/account", "/api"]
+
+        results: dict[str, Any] = {
+            "target_url": target_url,
+            "cache_detected": False,
+            "cache_type": None,
+            "unkeyed_headers": [],
+            "cache_deception": [],
+            "summary": {"poisoning_vectors": 0, "deception_vectors": 0, "total_probes": 0},
+        }
+
+        # Cache detection header mapping
+        cache_indicators = {
+            "x-cache": None,
+            "cf-cache-status": "cloudflare",
+            "age": None,
+            "x-cache-hits": None,
+            "x-varnish": "varnish",
+        }
+
+        # Unkeyed headers to test with their canary values
+        unkeyed_probes: list[tuple[str, str, str]] = [
+            ("X-Forwarded-Host", "canary.example.com", "body"),
+            ("X-Forwarded-Scheme", "nothttps", "redirect"),
+            ("X-Forwarded-Proto", "nothttps", "redirect"),
+            ("X-Original-URL", "/canary-path", "body"),
+            ("X-Rewrite-URL", "/canary-path", "body"),
+            ("X-HTTP-Method-Override", "POST", "behavior"),
+            ("X-Forwarded-Port", "1337", "body"),
+            ("X-Custom-IP-Authorization", "127.0.0.1", "body"),
+        ]
+
+        # Cache deception extensions and parser tricks
+        deception_extensions = [".css", ".js", ".png", ".svg", "/style.css", "/x.js"]
+        parser_tricks = [";.css", "%0A.css", "%00.css"]
+        deception_paths = ["/account", "/profile", "/settings", "/dashboard", "/me"]
+
+        async with httpx.AsyncClient(
+            timeout=15,
+            follow_redirects=False,
+            http1=True,
+            http2=False,
+        ) as client:
+
+            ua_headers = {
+                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+            }
+
+            # --- Phase 1: Cache detection ---
+            # Send two identical requests and compare caching headers
+            try:
+                resp1 = await client.get(base + test_paths[0], headers=ua_headers)
+                resp2 = await client.get(base + test_paths[0], headers=ua_headers)
+
+                cache_type: str | None = None
+                cache_detected = False
+
+                for hdr, cdn_name in cache_indicators.items():
+                    val1 = resp1.headers.get(hdr)
+                    val2 = resp2.headers.get(hdr)
+
+                    if val2:
+                        # Check for cache HIT indicators
+                        if hdr == "x-cache" and "hit" in val2.lower():
+                            cache_detected = True
+                        elif hdr == "cf-cache-status" and val2.upper() in ("HIT", "DYNAMIC", "REVALIDATED"):
+                            cache_detected = True
+                            cache_type = "cloudflare"
+                        elif hdr == "age":
+                            try:
+                                if int(val2) > 0:
+                                    cache_detected = True
+                            except ValueError:
+                                pass
+                        elif hdr == "x-cache-hits":
+                            try:
+                                if int(val2) > 0:
+                                    cache_detected = True
+                            except ValueError:
+                                pass
+                        elif hdr == "x-varnish":
+                            # Two IDs in x-varnish means cached
+                            if len(val2.split()) >= 2:
+                                cache_detected = True
+                                cache_type = "varnish"
+
+                        if cdn_name and not cache_type:
+                            cache_type = cdn_name
+
+                # Also detect cache from Cache-Control / Pragma
+                cc = resp2.headers.get("cache-control", "")
+                if "public" in cc or ("max-age=" in cc and "max-age=0" not in cc and "no-cache" not in cc):
+                    cache_detected = True
+
+                results["cache_detected"] = cache_detected
+                results["cache_type"] = cache_type
+
+            except Exception as e:
+                results["cache_deception"].append({"error": f"Cache detection failed: {e}"})
+
+            # --- Phase 2: Unkeyed header testing ---
+            probe_count = 0
+            for header_name, canary_value, reflection_type in unkeyed_probes:
+                for path in test_paths:
+                    probe_count += 1
+                    entry: dict[str, Any] = {
+                        "header": header_name,
+                        "path": path,
+                        "reflected": False,
+                        "cached": False,
+                        "severity": None,
+                        "reflection_location": None,
+                    }
+
+                    # Use a cache buster so each probe is independent
+                    cache_buster = f"cb={uuid.uuid4().hex[:8]}"
+                    sep = "&" if "?" in path else "?"
+                    probe_url = f"{base}{path}{sep}{cache_buster}"
+
+                    try:
+                        resp = await client.get(
+                            probe_url,
+                            headers={
+                                **ua_headers,
+                                header_name: canary_value,
+                            },
+                        )
+
+                        body = resp.text
+                        location = resp.headers.get("location", "")
+                        set_cookie = resp.headers.get("set-cookie", "")
+
+                        # Check reflection
+                        reflected = False
+                        reflection_loc = None
+
+                        if canary_value in body:
+                            reflected = True
+                            reflection_loc = "body"
+                        elif canary_value in location:
+                            reflected = True
+                            reflection_loc = "location_header"
+                        elif canary_value in set_cookie:
+                            reflected = True
+                            reflection_loc = "set_cookie"
+                        elif header_name == "X-Forwarded-Scheme" and resp.status_code in (301, 302):
+                            # Redirect often means the scheme header was processed
+                            if "https" in location or canary_value in location:
+                                reflected = True
+                                reflection_loc = "redirect"
+                        elif header_name == "X-Forwarded-Proto" and resp.status_code in (301, 302):
+                            reflected = True
+                            reflection_loc = "redirect"
+
+                        entry["reflected"] = reflected
+                        entry["reflection_location"] = reflection_loc
+
+                        # Check if cached
+                        is_cached = False
+                        x_cache = resp.headers.get("x-cache", "")
+                        cf_status = resp.headers.get("cf-cache-status", "")
+                        age = resp.headers.get("age", "")
+
+                        if "hit" in x_cache.lower():
+                            is_cached = True
+                        elif cf_status.upper() in ("HIT", "REVALIDATED"):
+                            is_cached = True
+                        elif age:
+                            try:
+                                is_cached = int(age) > 0
+                            except ValueError:
+                                pass
+
+                        entry["cached"] = is_cached
+
+                        if reflected and is_cached:
+                            entry["severity"] = "high"
+                        elif reflected:
+                            entry["severity"] = "medium"
+
+                    except Exception as e:
+                        entry["error"] = str(e)
+
+                    # Only record interesting results (reflected or errors)
+                    if entry.get("reflected") or entry.get("error"):
+                        results["unkeyed_headers"].append(entry)
+
+            # --- Phase 3: Cache deception testing ---
+            for path in deception_paths:
+                # First get the baseline for this path
+                try:
+                    baseline_resp = await client.get(
+                        f"{base}{path}",
+                        headers=ua_headers,
+                    )
+                    baseline_status = baseline_resp.status_code
+                    baseline_length = len(baseline_resp.text)
+                    # Skip if path returns 404 — nothing to deceive
+                    if baseline_status == 404:
+                        continue
+                except Exception:
+                    continue
+
+                for ext in deception_extensions + parser_tricks:
+                    probe_count += 1
+                    deception_url = f"{base}{path}{ext}"
+
+                    deception_entry: dict[str, Any] = {
+                        "path": f"{path}{ext}",
+                        "returns_dynamic_content": False,
+                        "cached": False,
+                        "severity": None,
+                    }
+
+                    try:
+                        resp = await client.get(deception_url, headers=ua_headers)
+
+                        # Check if it returns content similar to the original path
+                        resp_length = len(resp.text)
+                        is_dynamic = (
+                            resp.status_code == baseline_status
+                            and resp.status_code != 404
+                            and resp_length > 100
+                            and abs(resp_length - baseline_length) / max(baseline_length, 1) < 0.5
+                        )
+
+                        deception_entry["returns_dynamic_content"] = is_dynamic
+                        deception_entry["response_status"] = resp.status_code
+
+                        # Check caching
+                        is_cached = False
+                        cc = resp.headers.get("cache-control", "")
+                        x_cache = resp.headers.get("x-cache", "")
+                        cf_status = resp.headers.get("cf-cache-status", "")
+                        age = resp.headers.get("age", "")
+
+                        if "hit" in x_cache.lower():
+                            is_cached = True
+                        elif cf_status.upper() in ("HIT", "REVALIDATED"):
+                            is_cached = True
+                        elif age:
+                            try:
+                                is_cached = int(age) > 0
+                            except ValueError:
+                                pass
+                        elif "public" in cc or ("max-age=" in cc and "max-age=0" not in cc and "no-cache" not in cc):
+                            is_cached = True
+
+                        deception_entry["cached"] = is_cached
+
+                        if is_dynamic and is_cached:
+                            deception_entry["severity"] = "high"
+                        elif is_dynamic:
+                            deception_entry["severity"] = "low"
+
+                    except Exception as e:
+                        deception_entry["error"] = str(e)
+
+                    # Only record interesting results
+                    if deception_entry.get("returns_dynamic_content") or deception_entry.get("error"):
+                        results["cache_deception"].append(deception_entry)
+
+            # --- Summary ---
+            results["summary"]["poisoning_vectors"] = sum(
+                1 for h in results["unkeyed_headers"]
+                if h.get("reflected") and h.get("cached")
+            )
+            results["summary"]["deception_vectors"] = sum(
+                1 for d in results["cache_deception"]
+                if d.get("returns_dynamic_content") and d.get("cached")
+            )
+            results["summary"]["total_probes"] = probe_count
 
         return json.dumps(results)

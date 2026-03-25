@@ -993,3 +993,260 @@ class TestDiscoverServices:
         for key in ["target_url", "discovered_services", "dns_txt_records",
                      "probes", "total_services", "total_probes"]:
             assert key in result
+
+
+class TestRequestSmuggling:
+    """Tests for the test_request_smuggling MCP tool."""
+
+    @pytest.fixture
+    def mcp_smuggling(self):
+        mcp = FastMCP("test-strix")
+        mock_sandbox = MagicMock()
+        mock_sandbox.active_scan = None
+        mock_sandbox._active_scan = None
+        register_tools(mcp, mock_sandbox)
+        return mcp
+
+    def _mock_response(self, status_code=200, text="", headers=None):
+        resp = MagicMock()
+        resp.status_code = status_code
+        resp.text = text
+        resp.headers = headers or {}
+        return resp
+
+    @pytest.mark.asyncio
+    async def test_proxy_fingerprinting_cloudflare(self, mcp_smuggling):
+        from unittest.mock import AsyncMock, patch
+
+        cf_headers = {
+            "server": "cloudflare",
+            "cf-ray": "abc123-IAD",
+            "x-cache": "HIT",
+        }
+        resp = self._mock_response(200, "OK", cf_headers)
+
+        mock_client = AsyncMock()
+        mock_client.get = AsyncMock(return_value=resp)
+        mock_client.post = AsyncMock(return_value=resp)
+        mock_ctx = AsyncMock()
+        mock_ctx.__aenter__ = AsyncMock(return_value=mock_client)
+        mock_ctx.__aexit__ = AsyncMock(return_value=False)
+
+        with patch("httpx.AsyncClient", return_value=mock_ctx):
+            result = json.loads(_tool_text(await mcp_smuggling.call_tool(
+                "test_request_smuggling",
+                {"target_url": "https://example.com"},
+            )))
+
+        assert result["proxy_stack"]["cdn"] == "cloudflare"
+        assert "cf-ray" in result["proxy_stack"]
+        assert result["proxy_stack"]["server"] == "cloudflare"
+
+    @pytest.mark.asyncio
+    async def test_result_structure(self, mcp_smuggling):
+        from unittest.mock import AsyncMock, patch
+
+        resp = self._mock_response(200, "OK", {"server": "nginx"})
+
+        mock_client = AsyncMock()
+        mock_client.get = AsyncMock(return_value=resp)
+        mock_client.post = AsyncMock(return_value=resp)
+        mock_ctx = AsyncMock()
+        mock_ctx.__aenter__ = AsyncMock(return_value=mock_client)
+        mock_ctx.__aexit__ = AsyncMock(return_value=False)
+
+        with patch("httpx.AsyncClient", return_value=mock_ctx):
+            result = json.loads(_tool_text(await mcp_smuggling.call_tool(
+                "test_request_smuggling",
+                {"target_url": "https://example.com"},
+            )))
+
+        for key in ["target_url", "proxy_stack", "baseline", "probes",
+                     "te_obfuscation_results", "summary"]:
+            assert key in result
+        assert "potential_vulnerabilities" in result["summary"]
+        assert "tested_variants" in result["summary"]
+        # Should have CL.TE, TE.CL, TE.0 as main probes
+        assert len(result["probes"]) == 3
+        # Should have 5 TE.TE obfuscation variants
+        assert len(result["te_obfuscation_results"]) == 5
+
+    @pytest.mark.asyncio
+    async def test_all_normal_no_vulnerability(self, mcp_smuggling):
+        from unittest.mock import AsyncMock, patch
+
+        resp = self._mock_response(200, "OK")
+
+        mock_client = AsyncMock()
+        mock_client.get = AsyncMock(return_value=resp)
+        mock_client.post = AsyncMock(return_value=resp)
+        mock_ctx = AsyncMock()
+        mock_ctx.__aenter__ = AsyncMock(return_value=mock_client)
+        mock_ctx.__aexit__ = AsyncMock(return_value=False)
+
+        with patch("httpx.AsyncClient", return_value=mock_ctx):
+            result = json.loads(_tool_text(await mcp_smuggling.call_tool(
+                "test_request_smuggling",
+                {"target_url": "https://example.com"},
+            )))
+
+        assert result["summary"]["potential_vulnerabilities"] == 0
+        for probe in result["probes"]:
+            assert probe["status"] == "not_vulnerable"
+        for probe in result["te_obfuscation_results"]:
+            assert probe["status"] == "not_vulnerable"
+
+    @pytest.mark.asyncio
+    async def test_detects_status_change_as_potential(self, mcp_smuggling):
+        from unittest.mock import AsyncMock, patch
+
+        normal_resp = self._mock_response(200, "OK")
+        error_resp = self._mock_response(400, "Bad Request")
+
+        mock_client = AsyncMock()
+        mock_client.get = AsyncMock(return_value=normal_resp)
+        # POST calls return error (simulating smuggling anomaly)
+        mock_client.post = AsyncMock(return_value=error_resp)
+        mock_ctx = AsyncMock()
+        mock_ctx.__aenter__ = AsyncMock(return_value=mock_client)
+        mock_ctx.__aexit__ = AsyncMock(return_value=False)
+
+        with patch("httpx.AsyncClient", return_value=mock_ctx):
+            result = json.loads(_tool_text(await mcp_smuggling.call_tool(
+                "test_request_smuggling",
+                {"target_url": "https://example.com"},
+            )))
+
+        assert result["summary"]["potential_vulnerabilities"] > 0
+        potential = [p for p in result["probes"] if p["status"] == "potential"]
+        assert len(potential) > 0
+
+
+class TestCachePoisoning:
+    """Tests for the test_cache_poisoning MCP tool."""
+
+    @pytest.fixture
+    def mcp_cache(self):
+        mcp = FastMCP("test-strix")
+        mock_sandbox = MagicMock()
+        mock_sandbox.active_scan = None
+        mock_sandbox._active_scan = None
+        register_tools(mcp, mock_sandbox)
+        return mcp
+
+    def _mock_response(self, status_code=200, text="", headers=None):
+        resp = MagicMock()
+        resp.status_code = status_code
+        resp.text = text
+        resp.headers = headers or {}
+        return resp
+
+    @pytest.mark.asyncio
+    async def test_cache_detection_x_cache_hit(self, mcp_cache):
+        from unittest.mock import AsyncMock, patch
+
+        cached_resp = self._mock_response(200, "<html>page</html>", {
+            "x-cache": "HIT",
+            "cache-control": "public, max-age=3600",
+        })
+
+        mock_client = AsyncMock()
+        mock_client.get = AsyncMock(return_value=cached_resp)
+        mock_ctx = AsyncMock()
+        mock_ctx.__aenter__ = AsyncMock(return_value=mock_client)
+        mock_ctx.__aexit__ = AsyncMock(return_value=False)
+
+        with patch("httpx.AsyncClient", return_value=mock_ctx):
+            result = json.loads(_tool_text(await mcp_cache.call_tool(
+                "test_cache_poisoning",
+                {"target_url": "https://example.com", "paths": ["/"]},
+            )))
+
+        assert result["cache_detected"] is True
+
+    @pytest.mark.asyncio
+    async def test_unkeyed_header_reflection_detected(self, mcp_cache):
+        from unittest.mock import AsyncMock, patch
+
+        # Response that reflects X-Forwarded-Host in the body
+        reflected_resp = self._mock_response(
+            200,
+            '<html><link href="https://canary.example.com/style.css"></html>',
+            {"x-cache": "HIT"},
+        )
+        normal_resp = self._mock_response(200, "<html>normal</html>", {})
+
+        call_count = 0
+        async def mock_get(url, **kwargs):
+            nonlocal call_count
+            call_count += 1
+            headers = kwargs.get("headers", {})
+            if headers.get("X-Forwarded-Host") == "canary.example.com":
+                return reflected_resp
+            return normal_resp
+
+        mock_client = AsyncMock()
+        mock_client.get = AsyncMock(side_effect=mock_get)
+        mock_ctx = AsyncMock()
+        mock_ctx.__aenter__ = AsyncMock(return_value=mock_client)
+        mock_ctx.__aexit__ = AsyncMock(return_value=False)
+
+        with patch("httpx.AsyncClient", return_value=mock_ctx):
+            result = json.loads(_tool_text(await mcp_cache.call_tool(
+                "test_cache_poisoning",
+                {"target_url": "https://example.com", "paths": ["/"]},
+            )))
+
+        reflected = [h for h in result["unkeyed_headers"] if h.get("reflected")]
+        assert len(reflected) > 0
+        xfh = [h for h in reflected if h["header"] == "X-Forwarded-Host"]
+        assert len(xfh) > 0
+        assert xfh[0]["reflection_location"] == "body"
+
+    @pytest.mark.asyncio
+    async def test_result_structure(self, mcp_cache):
+        from unittest.mock import AsyncMock, patch
+
+        resp = self._mock_response(200, "<html>page</html>")
+
+        mock_client = AsyncMock()
+        mock_client.get = AsyncMock(return_value=resp)
+        mock_ctx = AsyncMock()
+        mock_ctx.__aenter__ = AsyncMock(return_value=mock_client)
+        mock_ctx.__aexit__ = AsyncMock(return_value=False)
+
+        with patch("httpx.AsyncClient", return_value=mock_ctx):
+            result = json.loads(_tool_text(await mcp_cache.call_tool(
+                "test_cache_poisoning",
+                {"target_url": "https://example.com", "paths": ["/"]},
+            )))
+
+        for key in ["target_url", "cache_detected", "cache_type",
+                     "unkeyed_headers", "cache_deception", "summary"]:
+            assert key in result
+        assert "poisoning_vectors" in result["summary"]
+        assert "deception_vectors" in result["summary"]
+        assert "total_probes" in result["summary"]
+
+    @pytest.mark.asyncio
+    async def test_cloudflare_cache_detection(self, mcp_cache):
+        from unittest.mock import AsyncMock, patch
+
+        cf_resp = self._mock_response(200, "<html>page</html>", {
+            "cf-cache-status": "HIT",
+        })
+
+        mock_client = AsyncMock()
+        mock_client.get = AsyncMock(return_value=cf_resp)
+        mock_ctx = AsyncMock()
+        mock_ctx.__aenter__ = AsyncMock(return_value=mock_client)
+        mock_ctx.__aexit__ = AsyncMock(return_value=False)
+
+        with patch("httpx.AsyncClient", return_value=mock_ctx):
+            result = json.loads(_tool_text(await mcp_cache.call_tool(
+                "test_cache_poisoning",
+                {"target_url": "https://example.com", "paths": ["/"]},
+            )))
+
+        assert result["cache_detected"] is True
+        assert result["cache_type"] == "cloudflare"
