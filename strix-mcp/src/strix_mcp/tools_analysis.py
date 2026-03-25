@@ -1201,67 +1201,88 @@ def register_analysis_tools(mcp: FastMCP, sandbox: SandboxManager) -> None:
 
     # --- K8s Service Enumeration Wordlist Generator ---
 
+    # Service registry: maps service name -> default ports
+    K8S_SERVICES: dict[str, list[int]] = {
+        # K8s core
+        "kubernetes": [443, 6443],
+        "kube-dns": [53],
+        "metrics-server": [443],
+        "coredns": [53],
+        # Monitoring
+        "grafana": [3000],
+        "prometheus": [9090],
+        "alertmanager": [9093],
+        "victoria-metrics": [8428],
+        "thanos": [9090, 10901],
+        "loki": [3100],
+        "tempo": [3200],
+        # GitOps
+        "argocd-server": [443, 8080],
+        # Security
+        "vault": [8200],
+        "cert-manager": [9402],
+        # Service mesh
+        "istiod": [15010, 15012],
+        "istio-ingressgateway": [443, 80],
+        # Auth
+        "keycloak": [8080, 8443],
+        "hydra": [4444, 4445],
+        "dex": [5556],
+        "oauth2-proxy": [4180],
+        # Data
+        "redis": [6379],
+        "rabbitmq": [5672, 15672],
+        "kafka": [9092],
+        "elasticsearch": [9200],
+        "nats": [4222],
+        # AWS EKS
+        "aws-load-balancer-controller": [9443],
+        "external-dns": [7979],
+        "ebs-csi-controller": [9808],
+        "cluster-autoscaler": [8085],
+    }
+    _TARGET_DEFAULT_PORTS = [443, 8080, 5432, 3000]
+
     @mcp.tool()
     async def k8s_enumerate(
         target_name: str | None = None,
         namespaces: list[str] | None = None,
         ports: list[int] | None = None,
+        scheme: str = "https",
+        max_urls: int = 500,
     ) -> str:
-        """Generate a comprehensive K8s service enumeration wordlist for SSRF probing.
+        """Generate a K8s service enumeration wordlist for SSRF probing.
         No sandbox required.
 
-        Returns service URLs to test via SSRF. Feed these into send_request,
-        python_action, or the webhook URL parameter to discover internal services.
+        Returns service URLs to test via SSRF. Each service is mapped to its
+        known default ports (not a cartesian product), keeping the list compact.
 
         target_name: company/product name for generating custom service names (e.g. "neon")
         namespaces: custom namespaces (default: common K8s namespaces)
-        ports: custom ports (default: common service ports)
+        ports: ADDITIONAL ports to scan on top of each service's defaults
+        scheme: URL scheme (default "https")
+        max_urls: maximum URLs to return (default 500)
 
         Usage: get the URL list, then use python_action to spray them through
         your SSRF vector and observe which ones resolve."""
 
-        # Standard K8s services
-        services = [
-            "kubernetes", "kube-dns", "metrics-server", "coredns",
-        ]
-        # AWS EKS
-        services += [
-            "aws-load-balancer-controller", "external-dns",
-            "ebs-csi-controller", "cluster-autoscaler",
-        ]
-        # Monitoring
-        services += [
-            "grafana", "prometheus", "alertmanager", "victoria-metrics",
-            "thanos", "loki", "tempo",
-        ]
-        # GitOps
-        services += [
-            "argocd-server", "flux-source-controller", "flux-helm-controller",
-        ]
-        # Security
-        services += [
-            "vault", "cert-manager", "falco", "trivy-operator",
-        ]
-        # Service mesh
-        services += [
-            "istiod", "istio-ingressgateway", "envoy", "linkerd-controller",
-        ]
-        # Auth
-        services += [
-            "keycloak", "hydra", "dex", "oauth2-proxy",
-        ]
-        # Data
-        services += [
-            "redis", "rabbitmq", "kafka", "elasticsearch", "nats",
-        ]
+        # Build service -> ports mapping (start from registry defaults)
+        service_ports: dict[str, list[int]] = {
+            svc: list(svc_ports) for svc, svc_ports in K8S_SERVICES.items()
+        }
 
-        # Target-specific services
+        # Target-specific services with default ports
         if target_name:
             name = target_name.lower().strip()
-            services += [
-                f"{name}-api", f"{name}-proxy", f"{name}-auth",
-                f"{name}-control-plane", f"{name}-storage", f"{name}-compute",
-            ]
+            for suffix in ["-api", "-proxy", "-auth", "-control-plane", "-storage", "-compute"]:
+                service_ports[f"{name}{suffix}"] = list(_TARGET_DEFAULT_PORTS)
+
+        # Append user-supplied additional ports to every service
+        if ports:
+            for svc in service_ports:
+                for p in ports:
+                    if p not in service_ports[svc]:
+                        service_ports[svc].append(p)
 
         # Namespaces
         default_namespaces = [
@@ -1272,33 +1293,44 @@ def register_analysis_tools(mcp: FastMCP, sandbox: SandboxManager) -> None:
             default_namespaces.append(target_name.lower().strip())
         ns_list = namespaces or default_namespaces
 
-        # Ports
-        default_ports = [80, 443, 8080, 8443, 3000, 4444, 5432, 6379, 9090, 9093]
-        port_list = ports or default_ports
-
-        # Generate all combinations grouped by namespace
+        # Generate URLs grouped by namespace (service-specific ports, not cartesian)
         by_namespace: dict[str, list[str]] = {}
         total = 0
         for ns in ns_list:
             urls: list[str] = []
-            for svc in services:
-                for port in port_list:
-                    urls.append(f"http://{svc}.{ns}.svc.cluster.local:{port}")
+            for svc, svc_ports in service_ports.items():
+                for port in svc_ports:
+                    urls.append(f"{scheme}://{svc}.{ns}.svc.cluster.local:{port}")
                     total += 1
             by_namespace[ns] = urls
 
         # Also generate short-form names for targets that resolve short names
         short_forms: list[str] = []
-        for svc in services:
-            short_forms.append(f"http://{svc}")
+        for svc in service_ports:
+            short_forms.append(f"{scheme}://{svc}")
             for ns in ns_list:
-                short_forms.append(f"http://{svc}.{ns}")
+                short_forms.append(f"{scheme}://{svc}.{ns}")
 
-        return json.dumps({
+        # Cap output
+        omitted = 0
+        if total > max_urls:
+            for ns in by_namespace:
+                if total <= max_urls:
+                    break
+                excess = total - max_urls
+                if excess >= len(by_namespace[ns]):
+                    total -= len(by_namespace[ns])
+                    omitted += len(by_namespace[ns])
+                    by_namespace[ns] = []
+                else:
+                    by_namespace[ns] = by_namespace[ns][:-excess]
+                    omitted += excess
+                    total -= excess
+
+        result: dict[str, Any] = {
             "total_urls": total,
-            "services": services,
+            "services": list(service_ports.keys()),
             "namespaces": ns_list,
-            "ports": port_list,
             "urls_by_namespace": by_namespace,
             "short_forms": short_forms,
             "usage_hint": (
@@ -1306,7 +1338,12 @@ def register_analysis_tools(mcp: FastMCP, sandbox: SandboxManager) -> None:
                 "baseline (known-bad hostname) to identify which services resolve. "
                 "Short forms work when K8s DNS search domains are configured."
             ),
-        })
+        }
+        if omitted:
+            result["omitted_urls"] = omitted
+            result["note"] = f"{omitted} URLs omitted due to max_urls={max_urls} cap."
+
+        return json.dumps(result)
 
     # --- Blind SSRF Oracle Builder ---
 

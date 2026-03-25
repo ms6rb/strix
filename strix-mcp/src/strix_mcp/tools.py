@@ -424,13 +424,21 @@ def register_tools(mcp: FastMCP, sandbox: SandboxManager) -> None:
         return resources.list_modules(category=category)
 
     @mcp.tool()
-    async def load_skill(skills: str) -> str:
+    async def load_skill(
+        skills: str,
+        max_content_length: int = 50000,
+        summary_only: bool = False,
+    ) -> str:
         """Dynamically load security knowledge skills into the current conversation.
         Runs client-side (no sandbox required). Returns the full skill content
         inline so you can immediately apply the techniques described.
 
         skills: comma-separated skill names (max 5). Use list_modules to see
             available skills. Examples: "nuclei,sqlmap", "xss", "graphql,nextjs"
+        max_content_length: maximum total chars for all skill content (default 50000).
+            If exceeded, the largest skills are truncated with a note.
+        summary_only: if True, return just skill names and descriptions without
+            full content (useful for checking what would be loaded)
 
         Prefer this over get_module when you need to actively apply multiple skills
         at once. The returned content includes exploitation techniques, tool usage,
@@ -479,7 +487,44 @@ def register_tools(mcp: FastMCP, sandbox: SandboxManager) -> None:
         }
         if failed:
             result["failed_skills"] = failed
-        result["skill_content"] = loaded_content
+
+        if summary_only:
+            # Return just names and first-line descriptions
+            result["skill_summaries"] = {
+                name: content.split("\n", 1)[0][:200]
+                for name, content in loaded_content.items()
+            }
+        else:
+            # Apply max_content_length: truncate largest skills first
+            total_len = sum(len(c) for c in loaded_content.values())
+            if total_len > max_content_length:
+                # Sort by size descending to truncate largest first
+                by_size = sorted(loaded_content.items(), key=lambda x: -len(x[1]))
+                truncated_content: dict[str, str] = {}
+                truncation_notes: list[str] = []
+                remaining_budget = max_content_length
+
+                # First pass: calculate fair share per skill
+                for name, content in sorted(loaded_content.items(), key=lambda x: len(x[1])):
+                    skills_left = len(loaded_content) - len(truncated_content)
+                    fair_share = remaining_budget // max(skills_left, 1)
+                    if len(content) <= fair_share:
+                        truncated_content[name] = content
+                        remaining_budget -= len(content)
+                    else:
+                        limit = max(fair_share, 500)  # keep at least 500 chars
+                        truncated_content[name] = content[:limit]
+                        truncation_notes.append(
+                            f"Skill '{name}' truncated to {limit} chars. "
+                            "Call load_skill with fewer skills to get full content."
+                        )
+                        remaining_budget -= limit
+
+                result["skill_content"] = truncated_content
+                if truncation_notes:
+                    result["truncation_notes"] = truncation_notes
+            else:
+                result["skill_content"] = loaded_content
 
         return json.dumps(result)
 

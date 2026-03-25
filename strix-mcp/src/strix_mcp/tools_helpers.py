@@ -182,8 +182,12 @@ def build_nuclei_command(
 
 
 def extract_script_urls(html: str, base_url: str) -> list[str]:
-    """Extract absolute URLs of <script src="..."> tags from HTML."""
-    pattern = r'<script[^>]+src=["\']([^"\']+)["\']'
+    """Extract absolute URLs of <script src="..."> tags from HTML.
+
+    Handles attributes like type="module" and valueless attributes
+    (e.g. ``crossorigin``) that appear before the ``src``.
+    """
+    pattern = r'<script[^>]*\s+src=["\']([^"\']+)["\']'
     matches = re.findall(pattern, html, re.IGNORECASE)
     return [urljoin(base_url, m) for m in matches]
 

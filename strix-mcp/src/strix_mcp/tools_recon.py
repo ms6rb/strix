@@ -190,7 +190,7 @@ def register_recon_tools(mcp: FastMCP, sandbox: SandboxManager) -> None:
 
         # Build Python script that runs inside sandbox.
         # Regex patterns injected via repr() to avoid escaping issues in nested strings.
-        script_regex = r'<script[^>]+src=["' + "'" + r'](.[^"' + "'" + r']+)["' + "'" + r']'
+        script_regex = r'<script[^>]*\s+src=["\']([^"\']+)["\']'
         sm_regex = r'//[#@]\s*sourceMappingURL=(\S+)'
         script = (
             'import json, re, sys\n'

@@ -1267,9 +1267,42 @@ class TestK8sEnumerate:
     @pytest.mark.asyncio
     async def test_default_wordlist(self, mcp_k8s):
         result = json.loads(_tool_text(await mcp_k8s.call_tool("k8s_enumerate", {})))
-        assert result["total_urls"] > 100
+        assert result["total_urls"] > 50
+        assert result["total_urls"] < 500  # no longer a cartesian product
         assert "urls_by_namespace" in result
         assert "kube-system" in result["urls_by_namespace"]
+
+    @pytest.mark.asyncio
+    async def test_uses_https_scheme_by_default(self, mcp_k8s):
+        result = json.loads(_tool_text(await mcp_k8s.call_tool("k8s_enumerate", {})))
+        all_urls = []
+        for ns_urls in result["urls_by_namespace"].values():
+            all_urls.extend(ns_urls)
+        assert all(u.startswith("https://") for u in all_urls)
+        assert all(u.startswith("https://") for u in result["short_forms"])
+
+    @pytest.mark.asyncio
+    async def test_custom_scheme(self, mcp_k8s):
+        result = json.loads(_tool_text(await mcp_k8s.call_tool("k8s_enumerate", {
+            "scheme": "http",
+        })))
+        all_urls = []
+        for ns_urls in result["urls_by_namespace"].values():
+            all_urls.extend(ns_urls)
+        assert all(u.startswith("http://") for u in all_urls)
+
+    @pytest.mark.asyncio
+    async def test_service_specific_ports(self, mcp_k8s):
+        """Services should use their known default ports, not a cartesian product."""
+        result = json.loads(_tool_text(await mcp_k8s.call_tool("k8s_enumerate", {
+            "namespaces": ["default"],
+        })))
+        urls = result["urls_by_namespace"]["default"]
+        # grafana should only appear on port 3000 (its default), not on 443, 6379, etc.
+        grafana_urls = [u for u in urls if "grafana.default" in u]
+        grafana_ports = [int(u.split(":")[-1]) for u in grafana_urls]
+        assert 3000 in grafana_ports
+        assert 6379 not in grafana_ports  # redis port should not be on grafana
 
     @pytest.mark.asyncio
     async def test_target_name_adds_custom_services(self, mcp_k8s):
@@ -1283,16 +1316,26 @@ class TestK8sEnumerate:
         assert "neon" in result["urls_by_namespace"]  # namespace added
 
     @pytest.mark.asyncio
-    async def test_custom_namespaces_and_ports(self, mcp_k8s):
+    async def test_additional_ports_appended(self, mcp_k8s):
+        """User-supplied ports should be added to service defaults, not replace them."""
         result = json.loads(_tool_text(await mcp_k8s.call_tool("k8s_enumerate", {
-            "namespaces": ["custom-ns"],
+            "namespaces": ["default"],
             "ports": [9999],
         })))
-        assert "custom-ns" in result["urls_by_namespace"]
-        all_urls = []
-        for ns_urls in result["urls_by_namespace"].values():
-            all_urls.extend(ns_urls)
-        assert any(":9999" in u for u in all_urls)
+        urls = result["urls_by_namespace"]["default"]
+        # 9999 should appear as additional port on services
+        assert any(":9999" in u for u in urls)
+        # grafana's default 3000 should still be present
+        assert any("grafana" in u and ":3000" in u for u in urls)
+
+    @pytest.mark.asyncio
+    async def test_max_urls_cap(self, mcp_k8s):
+        """Output should be capped at max_urls."""
+        result = json.loads(_tool_text(await mcp_k8s.call_tool("k8s_enumerate", {
+            "max_urls": 10,
+        })))
+        total_actual = sum(len(v) for v in result["urls_by_namespace"].values())
+        assert total_actual <= 10
 
     @pytest.mark.asyncio
     async def test_result_structure(self, mcp_k8s):

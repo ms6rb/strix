@@ -515,6 +515,52 @@ class TestLoadSkillTool:
         assert "nuclei" in result["loaded_skills"]
         assert len(result["skill_content"]["nuclei"]) > 0
 
+    @pytest.mark.asyncio
+    async def test_max_content_length_truncates(self, mcp_no_scan):
+        """When total content exceeds max_content_length, largest skills are truncated."""
+        result = json.loads(_tool_text(await mcp_no_scan.call_tool("load_skill", {
+            "skills": "idor,xss,sql_injection",
+            "max_content_length": 1000,
+        })))
+        assert result["success"] is True
+        assert len(result["loaded_skills"]) == 3
+        # Total content should not exceed max_content_length (with some tolerance for min 500)
+        total = sum(len(c) for c in result["skill_content"].values())
+        # All three skills should be present in skill_content
+        assert "idor" in result["skill_content"]
+        assert "xss" in result["skill_content"]
+        assert "sql_injection" in result["skill_content"]
+        # At least one skill should have been truncated
+        assert "truncation_notes" in result
+        assert len(result["truncation_notes"]) > 0
+
+    @pytest.mark.asyncio
+    async def test_summary_only_mode(self, mcp_no_scan):
+        """summary_only=True should return skill names without full content."""
+        result = json.loads(_tool_text(await mcp_no_scan.call_tool("load_skill", {
+            "skills": "idor,xss",
+            "summary_only": True,
+        })))
+        assert result["success"] is True
+        assert "skill_content" not in result
+        assert "skill_summaries" in result
+        assert "idor" in result["skill_summaries"]
+        assert "xss" in result["skill_summaries"]
+        # Summaries should be short strings (first line)
+        for summary in result["skill_summaries"].values():
+            assert len(summary) <= 200
+
+    @pytest.mark.asyncio
+    async def test_max_content_length_no_truncation_when_under(self, mcp_no_scan):
+        """When content is under max_content_length, no truncation occurs."""
+        result = json.loads(_tool_text(await mcp_no_scan.call_tool("load_skill", {
+            "skills": "idor",
+            "max_content_length": 500000,
+        })))
+        assert result["success"] is True
+        assert "truncation_notes" not in result
+        assert "idor" in result["skill_content"]
+
 
 class TestScanStateLoadedSkills:
     """Tests for the loaded_skills field on ScanState."""

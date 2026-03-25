@@ -200,6 +200,15 @@ class TestSourcemapHelpers:
         assert "https://example.com/assets/vendor.js" in urls
         assert len(urls) == 3
 
+    def test_extract_script_urls_module_crossorigin(self):
+        """Scripts with type='module' and valueless crossorigin should be matched."""
+        from strix_mcp.tools_helpers import extract_script_urls
+
+        html = '<html><script type="module" crossorigin src="/v5/assets/index-DVrLtZxj.js"></script></html>'
+        urls = extract_script_urls(html, "https://example.com")
+        assert "https://example.com/v5/assets/index-DVrLtZxj.js" in urls
+        assert len(urls) == 1
+
     def test_extract_script_urls_empty(self):
         """No script tags should return empty list."""
         from strix_mcp.tools_helpers import extract_script_urls
