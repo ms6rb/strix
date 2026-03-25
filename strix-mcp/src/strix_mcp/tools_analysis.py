@@ -1293,25 +1293,60 @@ def register_analysis_tools(mcp: FastMCP, sandbox: SandboxManager) -> None:
             default_namespaces.append(target_name.lower().strip())
         ns_list = namespaces or default_namespaces
 
-        # Generate URLs grouped by namespace (service-specific ports, not cartesian)
-        by_namespace: dict[str, list[str]] = {}
+        # Namespace affinity: map services to their likely namespaces
+        # Only generate URLs for plausible service→namespace combinations
+        ns_affinity: dict[str, list[str]] = {
+            "default": ["kubernetes"],
+            "kube-system": ["kube-dns", "coredns", "metrics-server", "aws-load-balancer-controller",
+                            "external-dns", "ebs-csi-controller", "cluster-autoscaler"],
+            "monitoring": ["grafana", "prometheus", "alertmanager", "victoria-metrics",
+                           "thanos", "loki", "tempo"],
+            "argocd": ["argocd-server"],
+            "vault": ["vault"],
+            "cert-manager": ["cert-manager"],
+            "istio-system": ["istiod", "istio-ingressgateway", "envoy", "linkerd-controller"],
+        }
+        # Target-specific services go to target namespace
+        if target_name:
+            name = target_name.lower().strip()
+            ns_affinity[name] = [f"{name}{s}" for s in ["-api", "-proxy", "-auth", "-control-plane", "-storage", "-compute"]]
+
+        # Services not in any affinity map go to all namespaces
+        mapped_services = set()
+        for svcs in ns_affinity.values():
+            mapped_services.update(svcs)
+        unmapped = [s for s in service_ports if s not in mapped_services]
+
+        # Generate URLs — use affinity when available, fallback to default+kube-system for unmapped
+        by_namespace: dict[str, list[str]] = {ns: [] for ns in ns_list}
         total = 0
         for ns in ns_list:
-            urls: list[str] = []
-            for svc, svc_ports in service_ports.items():
-                for port in svc_ports:
-                    urls.append(f"{scheme}://{svc}.{ns}.svc.cluster.local:{port}")
-                    total += 1
-            by_namespace[ns] = urls
+            affinity_svcs = ns_affinity.get(ns, [])
+            for svc in affinity_svcs:
+                if svc in service_ports:
+                    for port in service_ports[svc]:
+                        by_namespace[ns].append(f"{scheme}://{svc}.{ns}.svc.cluster.local:{port}")
+                        total += 1
+            # Unmapped services only go to default and kube-system
+            if ns in ("default", "kube-system"):
+                for svc in unmapped:
+                    for port in service_ports[svc]:
+                        by_namespace[ns].append(f"{scheme}://{svc}.{ns}.svc.cluster.local:{port}")
+                        total += 1
 
-        # Also generate short-form names (service only, no namespace cross-product)
-        short_forms: list[str] = []
-        for svc in service_ports:
-            short_forms.append(f"{scheme}://{svc}")
+        # Remove empty namespaces
+        by_namespace = {ns: urls for ns, urls in by_namespace.items() if urls}
+
+        # Short-form names (service only)
+        short_forms: list[str] = [f"{scheme}://{svc}" for svc in service_ports]
 
         # Cap output — distribute evenly across namespaces
         omitted = 0
-        if total > max_urls:
+        if max_urls <= 0:
+            by_namespace = {ns: [] for ns in by_namespace}
+            omitted = total
+            total = 0
+        elif total > max_urls:
             per_ns = max(max_urls // len(by_namespace), 1)
             new_total = 0
             for ns in by_namespace:
@@ -1354,18 +1389,26 @@ def register_analysis_tools(mcp: FastMCP, sandbox: SandboxManager) -> None:
         Requires an active sandbox.
 
         Given a confirmed blind SSRF endpoint, tests with known-good and known-bad
-        targets to build an oracle (retry behavior, timing, status codes) that can
-        distinguish successful from failed internal requests.
+        targets to build an oracle (timing, status codes) that can distinguish
+        successful from failed internal requests.
 
-        ssrf_url: the vulnerable endpoint URL
+        ssrf_url: the vulnerable endpoint URL (e.g. webhook config endpoint)
         ssrf_param: parameter name that accepts the target URL (default "url")
         ssrf_method: HTTP method (default POST)
         ssrf_headers: additional headers for the SSRF request
         ssrf_body_template: request body template with {TARGET_URL} placeholder
         agent_id: subagent identifier from dispatch_agent
 
-        Returns: oracle calibration data — baseline responses, retry behavior,
-        timing differentials, and recommended exploitation approach."""
+        NOTE on retry oracle: This tool detects timing and status differentials
+        from the SSRF config endpoint response. For webhook-style SSRFs where the
+        real oracle is in delivery retries, you need a 2-phase approach:
+        (1) set webhook URL to a redirect → interactsh/webhook.site
+        (2) trigger the event that fires the webhook
+        (3) count incoming requests at the receiver
+        Use python_action for this — this tool handles the config-response oracle.
+
+        Returns: oracle calibration data — baseline responses, timing differentials,
+        and recommended exploitation approach."""
 
         scan = sandbox.active_scan
         if scan is None:
@@ -1430,8 +1473,8 @@ def register_analysis_tools(mcp: FastMCP, sandbox: SandboxManager) -> None:
         # --- Phase 1: Baseline calibration ---
         probe_targets = {
             "reachable": "https://httpbin.org/status/200",
-            "unreachable": "http://192.0.2.1/",
-            "dns_fail": "http://this-domain-does-not-exist-strix-test.invalid/",
+            "unreachable": "https://192.0.2.1/",
+            "dns_fail": "https://this-domain-does-not-exist-strix-test.invalid/",
         }
 
         baseline: dict[str, Any] = {}
