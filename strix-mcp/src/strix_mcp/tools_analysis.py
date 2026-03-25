@@ -573,6 +573,9 @@ def register_analysis_tools(mcp: FastMCP, sandbox: SandboxManager) -> None:
             "internal_hostnames": [],
             "websocket_urls": [],
             "route_definitions": [],
+            "cspt_sinks": [],
+            "postmessage_listeners": [],
+            "internal_packages": [],
             "interesting_strings": [],
             "errors": [],
         }
@@ -690,7 +693,8 @@ def register_analysis_tools(mcp: FastMCP, sandbox: SandboxManager) -> None:
         for key in [
             "api_endpoints", "collection_names", "environment_variables",
             "secrets", "oauth_ids", "internal_hostnames", "websocket_urls",
-            "route_definitions", "interesting_strings",
+            "route_definitions", "cspt_sinks", "postmessage_listeners",
+            "internal_packages", "interesting_strings",
         ]:
             findings[key] = sorted(set(findings[key]))
 
@@ -698,7 +702,8 @@ def register_analysis_tools(mcp: FastMCP, sandbox: SandboxManager) -> None:
             len(findings[k]) for k in [
                 "api_endpoints", "collection_names", "environment_variables",
                 "secrets", "oauth_ids", "internal_hostnames", "websocket_urls",
-                "route_definitions",
+                "route_definitions", "cspt_sinks", "postmessage_listeners",
+                "internal_packages",
             ]
         )
 

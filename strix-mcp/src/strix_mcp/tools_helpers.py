@@ -274,6 +274,48 @@ def _analyze_bundle(
         if len(route) > 1 and not route.endswith((".js", ".css")):
             findings["route_definitions"].append(route)
 
+    # CSPT sinks — fetch/XHR calls with user-controlled path segments
+    cspt_patterns = [
+        re.compile(r'''fetch\s*\([^)]*\+[^)]*\)'''),
+        re.compile(r'''fetch\s*\(\s*`[^`]*\$\{[^`]*`[^)]*\)'''),
+        re.compile(r'''axios\.(?:get|post|put|delete|patch)\s*\([^)]*\+[^)]*\)'''),
+        re.compile(r'''axios\.(?:get|post|put|delete|patch)\s*\(\s*`[^`]*\$\{[^`]*`[^)]*\)'''),
+        re.compile(r'''\$\.ajax\s*\(\s*\{[^}]*url\s*:[^}]*\+'''),
+        re.compile(r'''XMLHttpRequest[^;]*\.open\s*\([^)]*\+[^)]*\)'''),
+    ]
+    for pat in cspt_patterns:
+        for m in pat.finditer(content):
+            snippet = m.group(0)[:120]
+            findings.setdefault("cspt_sinks", []).append(
+                f"{snippet} in {source}"
+            )
+
+    # postMessage listeners
+    pm_pattern = re.compile(r'''addEventListener\s*\(\s*["']message["']''')
+    for m in pm_pattern.finditer(content):
+        findings.setdefault("postmessage_listeners", []).append(
+            f"message listener in {source}"
+        )
+
+    # Internal/private npm package names
+    _WELL_KNOWN_SCOPES = {
+        "@types", "@babel", "@angular", "@vue", "@react", "@next",
+        "@nestjs", "@fastify", "@aws-sdk", "@google-cloud", "@azure",
+        "@stripe", "@sentry", "@auth0", "@testing-library", "@emotion",
+        "@mui", "@reduxjs", "@tanstack", "@trpc", "@prisma", "@vercel",
+        "@sveltejs", "@nuxtjs", "@rollup", "@vitejs", "@eslint",
+    }
+    pkg_patterns = [
+        re.compile(r'''(?:require|from)\s*\(\s*["'](@[a-zA-Z0-9_-]+/[a-zA-Z0-9_-]+)["']'''),
+        re.compile(r'''from\s+["'](@[a-zA-Z0-9_-]+/[a-zA-Z0-9_-]+)["']'''),
+    ]
+    for pat in pkg_patterns:
+        for m in pat.finditer(content):
+            pkg = m.group(1)
+            scope = pkg.split("/")[0]
+            if scope not in _WELL_KNOWN_SCOPES:
+                findings.setdefault("internal_packages", []).append(pkg)
+
     # Framework detection
     if findings["framework"] is None:
         for framework, signals in framework_signals.items():

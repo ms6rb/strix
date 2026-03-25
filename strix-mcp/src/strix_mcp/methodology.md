@@ -108,6 +108,12 @@ Before vulnerability testing, run reconnaissance to map the full attack surface.
 - Use `discover_api` when the target returns generic responses to curl — probes with multiple content-types, detects GraphQL (introspection), gRPC-web, and finds OpenAPI specs. Feed discovered endpoints into subagent tasks
 - Use `discover_services` to find third-party services (Sanity, Firebase, Stripe, Sentry, Segment, Auth0, etc.) from page source and DNS TXT records. Auto-probes Sanity GROQ and other accessible APIs
 - Use `reason_chains` after running recon tools to discover cross-tool attack chains (e.g. writable Firebase collection + JS client reads from it = stored XSS). Pass outputs from firebase_audit, analyze_js_bundles, discover_services, compare_sessions, discover_api
+- Run `analyze_js_bundles` and check for `cspt_sinks`, `postmessage_listeners`, and `internal_packages` in results
+- If CSPT sinks found → dispatch dedicated CSPT agent with `load_skill("cspt")`
+- If postMessage listeners found → dispatch postMessage agent with `load_skill("postmessage")`
+- If internal packages found → dispatch supply chain agent with `load_skill("supply_chain")`
+- If OAuth endpoints detected → dispatch OAuth agent with `load_skill("oauth")`
+- If SAML/SSO endpoints detected → dispatch SSO agent with `load_skill("saml_sso_bypass")`
 - Load skill `browser_security` when testing custom browsers (Electron, Chromium forks) or AI-powered browsers — contains address bar spoofing test templates, prompt injection vectors, and UI spoofing detection methodology
 - Write ALL results as structured notes: `create_note(category="recon", title="...")`
 - Stay within scope: check `scope_rules` before scanning new targets
@@ -163,6 +169,14 @@ Use `get_scan_status` to see the `pending_chains` count — if non-zero, chains 
 | Mass Assignment | Role/permission field identified | Privilege escalation via role assignment | critical |
 | Race Condition | Financial transaction endpoint | Balance manipulation, double-spend | high |
 | Information Disclosure | Internal IPs / service names leaked | Targeted SSRF to internal services | high |
+| CSPT sink identified | CSRF-protected endpoint | CSRF bypass via path traversal | critical |
+| Open Redirect | OAuth flow detected | OAuth token theft via redirect manipulation | critical |
+| Internal package names leaked | Public registry available | Dependency confusion → RCE | critical |
+| postMessage listener found | Missing origin validation | DOM XSS / token theft via postMessage | high |
+| Cache poisoning vector | Reflected content in response | Stored XSS at CDN scale | critical |
+| Request smuggling possible | Auth endpoints discovered | Request hijacking / credential theft | critical |
+| AI/LLM feature detected | User-controlled content processed | Indirect prompt injection | high |
+| Prototype pollution found | Template engine (EJS/Pug) | Server-side RCE via gadget chain | critical |
 
 **Decision process:**
 1. Collect all Phase 1 findings
@@ -244,17 +258,19 @@ Call `load_skill("{comma-separated module names}")` to load all assigned skills 
 
 ## Vulnerability Priorities
 
-Test ALL of these (ordered by typical impact):
-1. IDOR — Unauthorized data access across accounts/tenants
-2. Authentication & JWT — Token forgery, session hijacking, privilege escalation
-3. Business Logic — Financial manipulation, workflow abuse, limit bypass
-4. SQL/NoSQL Injection — Database compromise and data exfiltration
-5. SSRF — Internal network access, cloud metadata theft
-6. XSS — Session hijacking, credential theft
-7. XXE — File disclosure, SSRF, DoS
-8. RCE — Complete system compromise
-9. CSRF — Unauthorized state-changing actions
-10. Race Conditions — Financial fraud, authentication bypass, quota bypass
+Test ALL of these (ordered by 2025-2026 bounty landscape impact):
+1. IDOR / Broken Access Control — #1 bounty payout category
+2. Authentication & SSO Bypass — SAML parser differentials, OAuth misconfig
+3. SSRF — 25% of total bounty earnings
+4. Client-Side Path Traversal (CSPT) — 88% growth, chains to CSRF/XSS/RCE
+5. HTTP Request Smuggling — $200K+ in research bounties
+6. Web Cache Poisoning/Deception — CDN-scale stored XSS
+7. Business Logic & Race Conditions — Financial manipulation, single-packet attacks
+8. SQL/NoSQL Injection — Database compromise
+9. XSS (Stored/DOM) — Session hijacking, especially via prototype pollution gadgets
+10. Supply Chain — Dependency confusion, internal package takeover
+11. AI/LLM Injection — Prompt injection on AI-powered features
+12. RCE — Deserialization, prototype pollution gadgets, file upload chains
 
 ## Severity Guide
 

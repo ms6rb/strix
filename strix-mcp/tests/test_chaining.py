@@ -404,6 +404,64 @@ class TestReasonCrossToolChains:
         chains = reason_cross_tool_chains()
         assert chains == []
 
+    def test_cspt_sinks_plus_csrf(self):
+        """CSPT sinks + CSRF vulnerability = CSPT bypass chain."""
+        js = {
+            "cspt_sinks": ["fetch(url + \"/data\") in app.js"],
+            "collection_names": [],
+            "secrets": [],
+        }
+        vulns = [{"title": "CSRF on password change", "severity": "medium"}]
+
+        chains = reason_cross_tool_chains(js_analysis=js, vuln_reports=vulns)
+        assert any("CSPT" in c["name"] for c in chains)
+
+    def test_internal_packages_dependency_confusion(self):
+        """Internal packages found = dependency confusion chain."""
+        js = {
+            "internal_packages": ["@acme/shared-auth", "@acme/internal-api"],
+            "collection_names": [],
+            "secrets": [],
+        }
+
+        chains = reason_cross_tool_chains(js_analysis=js)
+        assert any("Dependency confusion" in c["name"] or "dependency confusion" in c["chain_description"].lower() for c in chains)
+
+    def test_postmessage_listeners_chain(self):
+        """postMessage listeners = origin validation chain."""
+        js = {
+            "postmessage_listeners": ["message listener in app.js"],
+            "collection_names": [],
+            "secrets": [],
+        }
+
+        chains = reason_cross_tool_chains(js_analysis=js)
+        assert any("postMessage" in c["name"] for c in chains)
+
+    def test_oauth_plus_open_redirect(self):
+        """OAuth IDs + open redirect = token theft chain."""
+        js = {
+            "oauth_ids": ["12345-abc.apps.googleusercontent.com"],
+            "collection_names": [],
+            "secrets": [],
+        }
+        vulns = [{"title": "Open Redirect in /login", "severity": "medium"}]
+
+        chains = reason_cross_tool_chains(js_analysis=js, vuln_reports=vulns)
+        assert any("OAuth" in c["name"] for c in chains)
+
+    def test_graphql_mutation_abuse(self):
+        """GraphQL introspection + Mutation type = mutation abuse chain."""
+        api = {
+            "graphql": {"introspection": "enabled", "types": ["Query", "Mutation", "User"]},
+        }
+
+        chains = reason_cross_tool_chains(api_discovery=api)
+        chain_names = [c["name"] for c in chains]
+        # Should have both the existing introspection chain AND the new mutation abuse chain
+        assert any("GraphQL" in n and "introspection" in n.lower() for n in chain_names)
+        assert any("mutation" in n.lower() for n in chain_names)
+
     def test_chain_structure(self):
         """Each chain should have the required fields."""
         firebase = {

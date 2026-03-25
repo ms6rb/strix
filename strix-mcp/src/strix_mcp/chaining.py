@@ -503,6 +503,127 @@ def reason_cross_tool_chains(
             next_action=f"Use the SSRF to probe: {', '.join(internal_hosts[:3])}",
         ))
 
+    # --- CSPT sinks + CSRF-protected endpoints ---
+    cspt_sinks = js.get("cspt_sinks", [])
+    if cspt_sinks and ("csrf" in vuln_titles or any(
+        kw in vuln_titles for kw in ["samesite", "cookie", "csrf"]
+    )):
+        chains.append(_chain(
+            name="CSPT bypass of SameSite cookie protections",
+            severity="critical",
+            evidence=[
+                f"CSPT sinks found in JS bundles: {', '.join(cspt_sinks[:3])}",
+                "CSRF-protected or SameSite-cookie endpoints identified in reports",
+            ],
+            chain_description=(
+                "Client-Side Path Traversal sinks can issue same-origin requests with "
+                "attacker-controlled paths, bypassing SameSite cookie restrictions. "
+                "This turns CSPT into a CSRF bypass — or worse, XSS/RCE via path traversal."
+            ),
+            missing=[
+                "Identify which CSPT sinks accept user-controlled path segments",
+                "Map state-changing endpoints that rely on SameSite for CSRF protection",
+                "Test if path traversal sequences (../) are preserved through the fetch call",
+            ],
+            next_action="Load the 'cspt' skill and test each CSPT sink for path traversal exploitation.",
+        ))
+
+    # --- Internal packages + dependency confusion ---
+    internal_pkgs = js.get("internal_packages", [])
+    if internal_pkgs:
+        chains.append(_chain(
+            name=f"Dependency confusion via {len(internal_pkgs)} internal packages",
+            severity="critical",
+            evidence=[
+                f"Internal/private npm package names found in JS bundles: {', '.join(internal_pkgs[:5])}",
+            ],
+            chain_description=(
+                "Internal package names leaked in client-side JavaScript can be registered "
+                "on public registries (npm, PyPI). If the target's package manager checks "
+                "public registries, a higher-version malicious package will be installed — "
+                "leading to RCE in CI/CD or developer machines."
+            ),
+            missing=[
+                "Check if these package names exist on npmjs.com",
+                "Verify the target uses a private registry or scoped packages",
+                "Determine if CI/CD pipelines pull from public registries",
+            ],
+            next_action=(
+                f"Check npm for availability: {', '.join(internal_pkgs[:3])}. "
+                "If unregistered, this is a confirmed dependency confusion opportunity."
+            ),
+        ))
+
+    # --- postMessage listeners + missing origin validation ---
+    pm_listeners = js.get("postmessage_listeners", [])
+    if pm_listeners:
+        chains.append(_chain(
+            name=f"postMessage handlers without origin validation ({len(pm_listeners)} listeners)",
+            severity="high",
+            evidence=[
+                f"postMessage event listeners found: {', '.join(pm_listeners[:3])}",
+            ],
+            chain_description=(
+                "postMessage listeners that don't validate event.origin accept messages "
+                "from any window. An attacker can open the target in an iframe or window "
+                "and send crafted messages to trigger DOM XSS, token theft, or state manipulation."
+            ),
+            missing=[
+                "Check if each listener validates event.origin before processing",
+                "Identify what data the listeners accept and how it's used",
+                "Test if sensitive actions (auth, navigation, DOM writes) are triggered by messages",
+            ],
+            next_action="Load the 'postmessage' skill and test each listener for origin bypass.",
+        ))
+
+    # --- OAuth endpoints + open redirect ---
+    js_oauth_ids = js.get("oauth_ids", [])
+    if js_oauth_ids and "open redirect" in vuln_titles:
+        chains.append(_chain(
+            name="OAuth token theft via open redirect",
+            severity="critical",
+            evidence=[
+                f"OAuth client IDs found in JS: {', '.join(js_oauth_ids[:3])}",
+                "Open redirect vulnerability found in reports",
+            ],
+            chain_description=(
+                "An open redirect combined with OAuth flows allows an attacker to "
+                "manipulate the redirect_uri to steal authorization codes or tokens. "
+                "The OAuth provider redirects the user to the attacker's server with valid tokens."
+            ),
+            missing=[
+                "Identify the OAuth authorization endpoint and redirect_uri parameter",
+                "Test if the open redirect can be used as a valid redirect_uri",
+                "Check if authorization code or implicit flow tokens are leaked in the redirect",
+            ],
+            next_action="Load the 'oauth' skill and chain the open redirect with the OAuth flow.",
+        ))
+
+    # --- GraphQL introspection + no auth on mutations ---
+    if api.get("graphql", {}).get("introspection") == "enabled":
+        gql_types = api.get("graphql", {}).get("types", [])
+        has_mutations = any("Mutation" in t for t in gql_types)
+        if has_mutations:
+            chains.append(_chain(
+                name="GraphQL mutation abuse via introspection + missing auth",
+                severity="critical",
+                evidence=[
+                    "GraphQL introspection is enabled and exposes Mutation type",
+                    f"Types discovered: {', '.join(gql_types[:10])}",
+                ],
+                chain_description=(
+                    "GraphQL introspection reveals all mutations, and if authorization "
+                    "is not enforced on mutation resolvers, an attacker can perform "
+                    "arbitrary state-changing operations — creating, modifying, or deleting data."
+                ),
+                missing=[
+                    "Enumerate all mutations and their input types",
+                    "Test each mutation for authorization enforcement",
+                    "Check for sensitive mutations: createUser, updateRole, deleteAccount, transferFunds",
+                ],
+                next_action="Load the 'graphql' skill and test every mutation for missing authorization.",
+            ))
+
     return chains
 
 

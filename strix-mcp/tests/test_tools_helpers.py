@@ -1,11 +1,13 @@
 """Unit tests for tools_helpers.py (pure functions, no Docker required)."""
 import json
+import re
 
 from strix_mcp.tools_helpers import (
     _normalize_title,
     _find_duplicate,
     _categorize_owasp,
     _deduplicate_reports,
+    _analyze_bundle,
 )
 
 
@@ -237,3 +239,160 @@ class TestSourcemapHelpers:
         assert any("config.ts" in n and "API_KEY" in n for n in notable)
         assert any("auth.ts" in n and "SECRET" in n for n in notable)
         assert not any("utils.ts" in n for n in notable)
+
+
+class TestAnalyzeBundleNewPatterns:
+    """Tests for CSPT sinks, postMessage listeners, and internal package detection."""
+
+    def _make_patterns(self):
+        """Build the same pattern dict used by analyze_js_bundles."""
+        return {
+            "api_endpoint": re.compile(
+                r'''["']((?:https?://[^"'\s]+)?/(?:api|graphql|v[0-9]+|rest|rpc)[^"'\s]{2,})["']''',
+                re.IGNORECASE,
+            ),
+            "firebase_config": re.compile(
+                r'''["']?(apiKey|authDomain|projectId|storageBucket|messagingSenderId|appId|measurementId)["']?\s*[:=]\s*["']([^"']+)["']''',
+            ),
+            "collection_name": re.compile(
+                r'''(?:collection|doc|collectionGroup)\s*\(\s*["']([a-zA-Z_][a-zA-Z0-9_]{1,50})["']''',
+            ),
+            "env_var": re.compile(
+                r'''(?:process\.env\.|import\.meta\.env\.|NEXT_PUBLIC_|REACT_APP_|VITE_|NUXT_)([A-Z_][A-Z0-9_]{2,50})''',
+            ),
+            "secret_pattern": re.compile(
+                r'''["']((?:sk_(?:live|test)_|AIza|ghp_|gho_|glpat-|xox[bpsar]-|AKIA|ya29\.)[A-Za-z0-9_\-]{10,})["']''',
+            ),
+            "generic_key_assignment": re.compile(
+                r'''(?:api_?key|api_?secret|auth_?token|access_?token|private_?key|secret_?key|client_?secret)\s*[:=]\s*["']([^"']{8,})["']''',
+                re.IGNORECASE,
+            ),
+            "oauth_id": re.compile(
+                r'''["'](\d{5,}[\-\.][a-z0-9]+\.apps\.googleusercontent\.com)["']|["']([a-f0-9]{32,})["'](?=.*(?:client.?id|oauth))''',
+                re.IGNORECASE,
+            ),
+            "internal_host": re.compile(
+                r'''["']((?:https?://)?(?:10\.\d{1,3}\.\d{1,3}\.\d{1,3}|172\.(?:1[6-9]|2\d|3[01])\.\d{1,3}\.\d{1,3}|192\.168\.\d{1,3}\.\d{1,3}|[a-z0-9\-]+\.(?:internal|local|corp|private|staging|dev)(?:\.[a-z]+)?)(?::\d+)?(?:/[^"']*)?)["']''',
+                re.IGNORECASE,
+            ),
+            "websocket": re.compile(r'''["'](wss?://[^"'\s]+)["']''', re.IGNORECASE),
+            "route_def": re.compile(r'''(?:path|route|to)\s*[:=]\s*["'](/[a-zA-Z0-9/:_\-\[\]{}*]+)["']'''),
+        }
+
+    def _make_findings(self):
+        """Build an empty findings dict matching analyze_js_bundles."""
+        return {
+            "framework": None,
+            "api_endpoints": [],
+            "firebase_config": {},
+            "collection_names": [],
+            "environment_variables": [],
+            "secrets": [],
+            "oauth_ids": [],
+            "internal_hostnames": [],
+            "websocket_urls": [],
+            "route_definitions": [],
+            "cspt_sinks": [],
+            "postmessage_listeners": [],
+            "internal_packages": [],
+            "interesting_strings": [],
+        }
+
+    def _framework_signals(self):
+        return {
+            "React": [r"__REACT", r"createElement"],
+        }
+
+    # --- CSPT sink detection ---
+
+    def test_cspt_sink_fetch_concatenation(self):
+        """fetch() with string concatenation should be detected as CSPT sink."""
+        findings = self._make_findings()
+        content = 'var url = "/api/" + userInput; fetch(url + "/data")'
+        _analyze_bundle(content, "app.js", self._make_patterns(), self._framework_signals(), findings)
+        assert len(findings["cspt_sinks"]) >= 1
+        assert any("fetch" in s for s in findings["cspt_sinks"])
+
+    def test_cspt_sink_fetch_template_literal(self):
+        """fetch() with template literal interpolation should be detected."""
+        findings = self._make_findings()
+        content = 'fetch(`/api/${userId}/profile`)'
+        _analyze_bundle(content, "app.js", self._make_patterns(), self._framework_signals(), findings)
+        assert len(findings["cspt_sinks"]) >= 1
+
+    def test_cspt_sink_axios_concatenation(self):
+        """axios.get() with string concatenation should be detected."""
+        findings = self._make_findings()
+        content = 'axios.get("/users/" + id + "/settings")'
+        _analyze_bundle(content, "bundle.js", self._make_patterns(), self._framework_signals(), findings)
+        assert len(findings["cspt_sinks"]) >= 1
+        assert any("axios" in s for s in findings["cspt_sinks"])
+
+    def test_no_cspt_sink_static_fetch(self):
+        """fetch() with a static string should NOT be detected as CSPT sink."""
+        findings = self._make_findings()
+        content = 'fetch("/api/users")'
+        _analyze_bundle(content, "app.js", self._make_patterns(), self._framework_signals(), findings)
+        assert len(findings["cspt_sinks"]) == 0
+
+    # --- postMessage listener detection ---
+
+    def test_postmessage_listener_detected(self):
+        """addEventListener("message") should be detected."""
+        findings = self._make_findings()
+        content = 'window.addEventListener("message", function(e) { console.log(e.data); });'
+        _analyze_bundle(content, "app.js", self._make_patterns(), self._framework_signals(), findings)
+        assert len(findings["postmessage_listeners"]) >= 1
+
+    def test_postmessage_listener_single_quotes(self):
+        """addEventListener('message') with single quotes should also be detected."""
+        findings = self._make_findings()
+        content = "window.addEventListener('message', handler);"
+        _analyze_bundle(content, "app.js", self._make_patterns(), self._framework_signals(), findings)
+        assert len(findings["postmessage_listeners"]) >= 1
+
+    def test_no_postmessage_for_click(self):
+        """addEventListener("click") should NOT be detected as postMessage listener."""
+        findings = self._make_findings()
+        content = 'window.addEventListener("click", function(e) {});'
+        _analyze_bundle(content, "app.js", self._make_patterns(), self._framework_signals(), findings)
+        assert len(findings["postmessage_listeners"]) == 0
+
+    # --- Internal package detection ---
+
+    def test_internal_package_detected(self):
+        """@company/utils should be detected as internal package."""
+        findings = self._make_findings()
+        content = 'import { helper } from "@company/utils"'
+        _analyze_bundle(content, "app.js", self._make_patterns(), self._framework_signals(), findings)
+        assert len(findings["internal_packages"]) >= 1
+        assert "@company/utils" in findings["internal_packages"]
+
+    def test_internal_package_require(self):
+        """require("@internal/config") should be detected."""
+        findings = self._make_findings()
+        content = 'const cfg = require("@internal/config")'
+        _analyze_bundle(content, "bundle.js", self._make_patterns(), self._framework_signals(), findings)
+        assert len(findings["internal_packages"]) >= 1
+        assert "@internal/config" in findings["internal_packages"]
+
+    def test_well_known_scope_not_detected(self):
+        """@babel/core and @types/node should NOT be detected as internal packages."""
+        findings = self._make_findings()
+        content = 'import x from "@babel/core"\nimport y from "@types/node"'
+        _analyze_bundle(content, "app.js", self._make_patterns(), self._framework_signals(), findings)
+        assert len(findings["internal_packages"]) == 0
+
+    def test_mixed_packages(self):
+        """Mix of well-known and internal packages: only internal ones detected."""
+        findings = self._make_findings()
+        content = (
+            'import a from "@angular/core"\n'
+            'import b from "@mycompany/shared-auth"\n'
+            'import c from "@stripe/stripe-js"\n'
+            'import d from "@acme/internal-api"\n'
+        )
+        _analyze_bundle(content, "app.js", self._make_patterns(), self._framework_signals(), findings)
+        assert "@mycompany/shared-auth" in findings["internal_packages"]
+        assert "@acme/internal-api" in findings["internal_packages"]
+        assert len(findings["internal_packages"]) == 2
