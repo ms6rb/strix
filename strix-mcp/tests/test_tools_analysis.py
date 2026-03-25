@@ -1250,3 +1250,104 @@ class TestCachePoisoning:
 
         assert result["cache_detected"] is True
         assert result["cache_type"] == "cloudflare"
+
+
+class TestK8sEnumerate:
+    """Tests for the k8s_enumerate MCP tool."""
+
+    @pytest.fixture
+    def mcp_k8s(self):
+        mcp = FastMCP("test-strix")
+        mock_sandbox = MagicMock()
+        mock_sandbox.active_scan = None
+        mock_sandbox._active_scan = None
+        register_tools(mcp, mock_sandbox)
+        return mcp
+
+    @pytest.mark.asyncio
+    async def test_default_wordlist(self, mcp_k8s):
+        result = json.loads(_tool_text(await mcp_k8s.call_tool("k8s_enumerate", {})))
+        assert result["total_urls"] > 100
+        assert "urls_by_namespace" in result
+        assert "kube-system" in result["urls_by_namespace"]
+
+    @pytest.mark.asyncio
+    async def test_target_name_adds_custom_services(self, mcp_k8s):
+        result = json.loads(_tool_text(await mcp_k8s.call_tool("k8s_enumerate", {
+            "target_name": "neon",
+        })))
+        all_urls = []
+        for ns_urls in result["urls_by_namespace"].values():
+            all_urls.extend(ns_urls)
+        assert any("neon-api" in u for u in all_urls)
+        assert "neon" in result["urls_by_namespace"]  # namespace added
+
+    @pytest.mark.asyncio
+    async def test_custom_namespaces_and_ports(self, mcp_k8s):
+        result = json.loads(_tool_text(await mcp_k8s.call_tool("k8s_enumerate", {
+            "namespaces": ["custom-ns"],
+            "ports": [9999],
+        })))
+        assert "custom-ns" in result["urls_by_namespace"]
+        all_urls = []
+        for ns_urls in result["urls_by_namespace"].values():
+            all_urls.extend(ns_urls)
+        assert any(":9999" in u for u in all_urls)
+
+    @pytest.mark.asyncio
+    async def test_result_structure(self, mcp_k8s):
+        result = json.loads(_tool_text(await mcp_k8s.call_tool("k8s_enumerate", {})))
+        for key in ["total_urls", "urls_by_namespace", "short_forms", "usage_hint"]:
+            assert key in result
+        assert isinstance(result["short_forms"], list)
+
+
+class TestSsrfOracle:
+    """Tests for the ssrf_oracle MCP tool."""
+
+    @pytest.fixture
+    def mcp_no_scan(self):
+        mcp = FastMCP("test-strix")
+        mock_sandbox = MagicMock()
+        mock_sandbox.active_scan = None
+        mock_sandbox._active_scan = None
+        register_tools(mcp, mock_sandbox)
+        return mcp
+
+    @pytest.fixture
+    def mcp_with_scan(self):
+        from unittest.mock import AsyncMock
+        mcp = FastMCP("test-strix")
+        mock_sandbox = MagicMock()
+        scan = ScanState(
+            scan_id="test",
+            workspace_id="ws-1",
+            api_url="http://localhost:8080",
+            token="tok",
+            port=8080,
+            default_agent_id="mcp-test",
+        )
+        mock_sandbox.active_scan = scan
+        mock_sandbox._active_scan = scan
+        mock_sandbox.proxy_tool = AsyncMock(return_value={
+            "response": {"status_code": 200, "body": "ok"},
+        })
+        register_tools(mcp, mock_sandbox)
+        return mcp, mock_sandbox
+
+    @pytest.mark.asyncio
+    async def test_no_active_scan(self, mcp_no_scan):
+        result = json.loads(_tool_text(await mcp_no_scan.call_tool("ssrf_oracle", {
+            "ssrf_url": "https://target.com/webhook",
+        })))
+        assert "error" in result
+
+    @pytest.mark.asyncio
+    async def test_result_structure(self, mcp_with_scan):
+        mcp, _ = mcp_with_scan
+        result = json.loads(_tool_text(await mcp.call_tool("ssrf_oracle", {
+            "ssrf_url": "https://target.com/webhook",
+        })))
+        assert "oracles" in result
+        assert "baseline" in result
+        assert "recommended_approach" in result

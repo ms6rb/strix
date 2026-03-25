@@ -481,3 +481,24 @@ class TestReasonCrossToolChains:
             assert "next_action" in chain
             assert isinstance(chain["evidence"], list)
             assert isinstance(chain["missing"], list)
+
+    def test_ssrf_webhook_body_format_warning(self):
+        """SSRF chain with webhook in title should include body_format_warning."""
+        js = {"internal_hostnames": ["https://10.0.1.50:8080"], "collection_names": [], "secrets": []}
+        vulns = [{"title": "Webhook SSRF in /api/hooks", "severity": "high"}]
+
+        chains = reason_cross_tool_chains(js_analysis=js, vuln_reports=vulns)
+        ssrf_chains = [c for c in chains if "SSRF" in c["name"]]
+        assert len(ssrf_chains) >= 1
+        assert "body_format_warning" in ssrf_chains[0]
+        assert "redirect" in ssrf_chains[0]["body_format_warning"].lower()
+
+    def test_ssrf_no_webhook_no_body_warning(self):
+        """SSRF chain without webhook should NOT include body_format_warning."""
+        js = {"internal_hostnames": ["https://10.0.1.50:8080"], "collection_names": [], "secrets": []}
+        vulns = [{"title": "SSRF in image proxy", "severity": "high"}]
+
+        chains = reason_cross_tool_chains(js_analysis=js, vuln_reports=vulns)
+        ssrf_chains = [c for c in chains if "SSRF" in c["name"]]
+        assert len(ssrf_chains) >= 1
+        assert "body_format_warning" not in ssrf_chains[0]
