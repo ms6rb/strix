@@ -56,14 +56,18 @@ def register_proxy_tools(mcp: FastMCP, sandbox: SandboxManager) -> None:
         body: request body string
         timeout: max seconds to wait for response (default 30)
         agent_id: subagent identifier from dispatch_agent (omit for coordinator)"""
-        result = await sandbox.proxy_tool("send_request", {
+        kwargs: dict[str, Any] = {
             "method": method,
             "url": url,
-            "headers": headers,
-            "body": body,
             "timeout": timeout,
-            **({"agent_id": agent_id} if agent_id else {}),
-        })
+        }
+        if headers is not None:
+            kwargs["headers"] = headers
+        if body is not None:
+            kwargs["body"] = body
+        if agent_id:
+            kwargs["agent_id"] = agent_id
+        result = await sandbox.proxy_tool("send_request", kwargs)
         return json.dumps(result)
 
     @mcp.tool()
@@ -79,11 +83,12 @@ def register_proxy_tools(mcp: FastMCP, sandbox: SandboxManager) -> None:
         agent_id: subagent identifier from dispatch_agent (omit for coordinator)
 
         Typical workflow: browse with browser_action -> list_requests -> repeat_request with modifications."""
-        result = await sandbox.proxy_tool("repeat_request", {
-            "request_id": request_id,
-            "modifications": modifications,
-            **({"agent_id": agent_id} if agent_id else {}),
-        })
+        kwargs: dict[str, Any] = {"request_id": request_id}
+        if modifications is not None:
+            kwargs["modifications"] = modifications
+        if agent_id:
+            kwargs["agent_id"] = agent_id
+        result = await sandbox.proxy_tool("repeat_request", kwargs)
         return json.dumps(result)
 
     @mcp.tool()
@@ -136,13 +141,16 @@ def register_proxy_tools(mcp: FastMCP, sandbox: SandboxManager) -> None:
         search_pattern: regex pattern to highlight matches in the content
         page: page number for paginated responses
         agent_id: subagent identifier from dispatch_agent (omit for coordinator)"""
-        result = await sandbox.proxy_tool("view_request", {
-            "request_id": request_id,
-            "part": part,
-            "search_pattern": search_pattern,
-            "page": page,
-            **({"agent_id": agent_id} if agent_id else {}),
-        })
+        kwargs: dict[str, Any] = {"request_id": request_id}
+        if part is not None:
+            kwargs["part"] = part
+        if search_pattern is not None:
+            kwargs["search_pattern"] = search_pattern
+        if page is not None:
+            kwargs["page"] = page
+        if agent_id:
+            kwargs["agent_id"] = agent_id
+        result = await sandbox.proxy_tool("view_request", kwargs)
         return json.dumps(result)
 
     @mcp.tool()
@@ -286,12 +294,14 @@ def register_proxy_tools(mcp: FastMCP, sandbox: SandboxManager) -> None:
         file_pattern: glob pattern for file names (e.g. "*.py", "*.js")
         search_pattern: regex pattern to match in file contents
         agent_id: subagent identifier from dispatch_agent (omit for coordinator)"""
-        result = await sandbox.proxy_tool("search_files", {
-            "directory_path": directory_path,
-            "file_pattern": file_pattern,
-            "search_pattern": search_pattern,
-            **({"agent_id": agent_id} if agent_id else {}),
-        })
+        kwargs: dict[str, Any] = {"directory_path": directory_path}
+        if file_pattern is not None:
+            kwargs["file_pattern"] = file_pattern
+        if search_pattern is not None:
+            kwargs["search_pattern"] = search_pattern
+        if agent_id:
+            kwargs["agent_id"] = agent_id
+        result = await sandbox.proxy_tool("search_files", kwargs)
         return json.dumps(result)
 
     @mcp.tool()
